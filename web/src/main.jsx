@@ -1,21 +1,31 @@
 import { h, render } from 'preact';
 import { useState, useEffect, useRef, useCallback } from 'preact/hooks';
+import {useTransport} from "./transport.js";
 
 // ── Constants ──────────────────────────────────────────────────────────────
-const MIN_V = 50, MAX_V = 400;
+const MIN_V = 0, MAX_V = 120, DISPLAY_CAP_V = 160;
+const CAP_DANGER_V = 50;
+
+// ── Mode: ?mode=sim | ?mode=ws | auto (try WS, fall back to sim) ──────────
+const mode = new URLSearchParams(location.search).get('mode');
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const sign  = v => (v > 0 ? '+' : '') + Math.round(v);
 const pad3  = v => String(Math.round(v)).padStart(3, '0');
 
-function capColor(pct) {
-    if (pct > 80) return 'var(--red)';
-    if (pct > 50) return 'var(--amber)';
+function capColor(voltage, targetV) {
+    if (voltage > targetV && targetV > 0) return 'var(--red)';
+    if (voltage >= CAP_DANGER_V)          return 'var(--amber)';
     return 'var(--green)';
 }
 
-// ── Toggle ─────────────────────────────────────────────────────────────────
+
+// ══════════════════════════════════════════════════════════════════════════
+//  UI COMPONENTS
+// ══════════════════════════════════════════════════════════════════════════
+
+// ── Toggle ─────────────────────────────────────────────────────────────
 function Toggle({ on, onChange, disabled, variant = 'amber' }) {
     const cls = ['toggle',
         disabled              ? 'disabled' : '',
@@ -31,19 +41,19 @@ function Toggle({ on, onChange, disabled, variant = 'amber' }) {
     );
 }
 
-// ── VoltSlider ─────────────────────────────────────────────────────────────
+// ── VoltSlider ─────────────────────────────────────────────────────────
 function VoltSlider({ value, onChange, locked }) {
     return h('div', { class: 'section' },
         h('div', { class: 'section-label' }, 'Charge Target'),
         h('div', { class: 'volt-display' }, value, h('span', { class: 'unit' }, 'V')),
         h('input', {
             type: 'range', class: 'volt-slider',
-            min: MIN_V, max: MAX_V, step: 10,
+            min: MIN_V, max: MAX_V, step: 1,
             value,
             disabled: locked,
             onInput: e => onChange(parseInt(e.target.value)),
         }),
-        h('div', { style: { display:'flex', justifyContent:'space-between', fontSize:'9px', color:'var(--dim)', fontFamily:'var(--font-ui)', letterSpacing:'1px' } },
+        h('div', { style: { display:'flex', justifyContent:'space-between', fontSize:'10px', color:'var(--dim)', fontFamily:'var(--font-ui)', letterSpacing:'1px' } },
             h('span', null, MIN_V + 'V'),
             h('span', null, MAX_V + 'V'),
         ),
@@ -51,7 +61,7 @@ function VoltSlider({ value, onChange, locked }) {
     );
 }
 
-// ── FireButton ─────────────────────────────────────────────────────────────
+// ── FireButton ─────────────────────────────────────────────────────────
 function FireButton({ ready, onFire }) {
     const ringRef  = useRef(null);
     const rafRef   = useRef(null);
@@ -98,7 +108,7 @@ function FireButton({ ready, onFire }) {
     );
 }
 
-// ── BiBar ──────────────────────────────────────────────────────────────────
+// ── BiBar ──────────────────────────────────────────────────────────────
 function BiBar({ value, name }) {
     const clamped = clamp(value, -100, 100);
     const isPos   = clamped >= 0;
@@ -120,22 +130,24 @@ function BiBar({ value, name }) {
     );
 }
 
-// ── CapBar ─────────────────────────────────────────────────────────────────
-function CapBar({ voltage, pct, targetV, name }) {
-    const col     = capColor(pct);
-    const tgtPct  = ((targetV - MIN_V) / (MAX_V - MIN_V)) * 100;
+// ── CapBar ─────────────────────────────────────────────────────────────
+function CapBar({ voltage, targetV, name }) {
+    const displayV = Math.min(voltage, DISPLAY_CAP_V);
+    const fillPct  = (displayV / DISPLAY_CAP_V) * 100;
+    const col      = capColor(displayV, targetV);
+    const tgtPct   = (targetV / DISPLAY_CAP_V) * 100;
 
     return h('div', { class: 'cap-bar-wrap' },
-        h('div', { class: 'cap-bar-val', style: { color: col } }, Math.round(voltage) + 'V'),
+        h('div', { class: 'cap-bar-val', style: { color: col } }, Math.round(displayV) + 'V'),
         h('div', { class: 'cap-bar-track' },
-            h('div', { class: 'cap-bar-fill', style: { height: pct + '%', background: col } }),
+            h('div', { class: 'cap-bar-fill', style: { height: fillPct + '%', background: col } }),
             h('div', { class: 'cap-bar-target', style: { bottom: tgtPct + '%' } }),
         ),
         h('div', { class: 'cap-bar-name' }, name),
     );
 }
 
-// ── Compass ────────────────────────────────────────────────────────────────
+// ── Compass ────────────────────────────────────────────────────────────
 function Compass({ heading }) {
     const deg = ((heading % 360) + 360) % 360;
     const rad = (deg - 90) * Math.PI / 180;
@@ -186,11 +198,11 @@ function Compass({ heading }) {
     );
 }
 
-// ── PitchView ──────────────────────────────────────────────────────────────
+// ── PitchView ──────────────────────────────────────────────────────────
 function PitchView({ pitch }) {
     const W = 128, H = 104, mid = H / 2;
     const scale = (mid * 0.78) / 45;
-    const hy    = mid - pitch * scale;
+    const hy    = clamp(mid - pitch * scale, 0, H);
 
     const graticules = [-30, -15, 0, 15, 30].map(v => {
         const y    = mid - v * scale;
@@ -218,15 +230,17 @@ function PitchView({ pitch }) {
     );
 }
 
-// ── AimPad ─────────────────────────────────────────────────────────────────
-function AimPad() {
+// ── AimPad ─────────────────────────────────────────────────────────────
+function AimPad({ heading, pitch, trigArm, onAim }) {
     const padRef    = useRef(null);
-    const accumRef  = useRef({ x: 0, y: 0 });
-    const [accum, setAccum]   = useState({ x: 0, y: 0 });
+    const rawRef    = useRef(null);
+    const initRef   = useRef(false);
+    const [pos, setPos]       = useState({ x: 0, y: 0 });
     const [locked, setLocked] = useState(false);
     const [size,   setSize]   = useState({ w: 0, h: 0 });
 
-    // measure container
+    const AZ_MAX = 180, EL_MAX = 60;
+
     useEffect(() => {
         const obs = new ResizeObserver(([e]) => {
             setSize({ w: e.contentRect.width, h: e.contentRect.height });
@@ -236,13 +250,37 @@ function AimPad() {
     }, []);
 
     useEffect(() => {
+        if (initRef.current || size.w === 0 || size.h === 0) return;
+        initRef.current = true;
+        const hdgNorm = ((heading % 360) + 360) % 360;
+        const hdgCentered = hdgNorm > 180 ? hdgNorm - 360 : hdgNorm;
+        const pxPerDegX = (size.w / 2) / AZ_MAX;
+        const pxPerDegY = (size.h / 2) / EL_MAX;
+        const initX = hdgCentered * pxPerDegX;
+        const initY = -pitch * pxPerDegY;
+        rawRef.current = { x: initX, y: initY };
+        setPos({ x: initX, y: initY });
+    }, [size, heading, pitch]);
+
+    useEffect(() => {
+        if (!trigArm && document.pointerLockElement === padRef.current)
+            document.exitPointerLock();
+    }, [trigArm]);
+
+    useEffect(() => {
         const onMove = e => {
             if (document.pointerLockElement !== padRef.current) return;
-            accumRef.current = {
-                x: accumRef.current.x + e.movementX * 0.38,
-                y: accumRef.current.y + e.movementY * 0.38,
-            };
-            setAccum({ ...accumRef.current });
+            if (!rawRef.current) return;
+            const raw = rawRef.current;
+            raw.x += e.movementX * 0.38;
+            raw.y += e.movementY * 0.38;
+            const { h: ch } = size;
+            if (ch > 0) {
+                const pxPerDeg = (ch / 2) / EL_MAX;
+                const maxPxY = EL_MAX * pxPerDeg;
+                raw.y = clamp(raw.y, -maxPxY, maxPxY);
+            }
+            setPos({ x: raw.x, y: raw.y });
         };
         const onLock = () => setLocked(document.pointerLockElement === padRef.current);
         const onKey  = e => {
@@ -257,32 +295,52 @@ function AimPad() {
             document.removeEventListener('pointerlockchange', onLock);
             document.removeEventListener('keydown', onKey);
         };
-    }, []);
+    }, [size]);
 
     const handleClick = useCallback(() => {
+        if (!trigArm) return;
         if (!locked && padRef.current) padRef.current.requestPointerLock();
-    }, [locked]);
+    }, [locked, trigArm]);
 
     const reset = useCallback(e => {
         e.stopPropagation();
-        accumRef.current = { x: 0, y: 0 };
-        setAccum({ x: 0, y: 0 });
+        if (!rawRef.current) rawRef.current = { x: 0, y: 0 };
+        rawRef.current.x = 0;
+        rawRef.current.y = 0;
+        setPos({ x: 0, y: 0 });
     }, []);
 
-    const { w, h } = size;
-    const vizX = w ? ((accum.x % w) + w) % w : 0;
-    const vizY = h ? ((accum.y % h) + h) % h : 0;
-    const CX = w / 2, CY = h / 2;
-    const maxR = Math.min(w, h) * 0.44;
+    const { w, h: ht } = size;
+    const CX = w / 2, CY = ht / 2;
+    const maxR = Math.min(w, ht) * 0.44;
     const color = locked ? 'var(--red)' : 'var(--cyan)';
 
-    const az = (accum.x * 0.28).toFixed(1);
-    const el = (-accum.y * 0.18).toFixed(1);
+    let azDeg = 0, elDeg = 0;
+    if (w > 0) {
+        const pxPerDeg = (w / 2) / AZ_MAX;
+        azDeg = pos.x / pxPerDeg;           // unbounded, keeps accumulating
+    }
+    if (ht > 0) {
+        const pxPerDeg = (ht / 2) / EL_MAX;
+        elDeg = clamp(-(pos.y / pxPerDeg), -EL_MAX, EL_MAX);
+    }
+    // Display value wraps to -180..+180
+    const displayAzDeg = ((azDeg % 360 + 540) % 360) - 180;
 
-    // Build SVG content
-    const rings    = [0.25, 0.5, 0.75, 1].map(f =>
-        h('circle', { key:f, cx:CX, cy:CY, r: maxR*f, fill:'none', stroke:'var(--border)', 'stroke-width':0.5 })
+    useEffect(() => {
+        if (onAim) onAim(azDeg, elDeg);
+    }, [azDeg, elDeg]);
+
+    const vizX = w  ? ((CX + pos.x) % w  + w)  % w  : CX;
+    const vizY = ht ? clamp(CY + pos.y, 0, ht) : CY;
+
+    const azStr = (displayAzDeg >= 0 ? '+' : '') + displayAzDeg.toFixed(1);
+    const elStr = (elDeg >= 0 ? '+' : '') + elDeg.toFixed(1);
+
+    const rings = [0.25, 0.5, 0.75, 1].map(f =>
+        h('circle', { key:'r'+f, cx:CX, cy:CY, r: maxR*f, fill:'none', stroke:'var(--border)', 'stroke-width':0.5 })
     );
+
     const degTicks = Array.from({ length: 36 }, (_, i) => {
         const a  = i * 10 * Math.PI / 180;
         const r0 = maxR * 0.92, r1 = maxR;
@@ -294,30 +352,66 @@ function AimPad() {
         });
     });
 
-    // Corner brackets
     const bS = 16, bG = 6;
-    const corners = [[0,0],[w,0],[w,h],[0,h]].map(([bx,by], i) => {
+    const corners = [[0,0],[w,0],[w,ht],[0,ht]].map(([bx,by], i) => {
         const sx = bx === 0 ? 1 : -1, sy = by === 0 ? 1 : -1;
         const pts = `${bx+sx*bG},${by+sy*(bG+bS)} ${bx+sx*bG},${by+sy*bG} ${bx+sx*(bG+bS)},${by+sy*bG}`;
-        return h('polyline', { key:i, points:pts, fill:'none', stroke:'var(--border2)', 'stroke-width':1.5 });
+        return h('polyline', { key:'c'+i, points:pts, fill:'none', stroke:'var(--border2)', 'stroke-width':1.5 });
     });
 
+    const crosshairAt = (cx, cy, key) => h('g', { key },
+        h('line', { x1:cx-18, y1:cy, x2:cx+18, y2:cy, stroke:color, 'stroke-width':1.5 }),
+        h('line', { x1:cx, y1:cy-18, x2:cx, y2:cy+18, stroke:color, 'stroke-width':1.5 }),
+        h('circle', { cx, cy, r:14, fill:'none', stroke:color, 'stroke-width':1.5, opacity:0.75 }),
+        h('circle', { cx, cy, r:2, fill:color }),
+    );
+
+    const wrapX = vizX < CX ? vizX + w : vizX - w;
+
+    // Blue "actual pointing" reticle
+    let actualX = CX, actualY = CY;
+    if (w > 0) {
+        const hdgNorm = ((heading % 360) + 360) % 360;
+        const hdgCentered = hdgNorm > 180 ? hdgNorm - 360 : hdgNorm;
+        const pxPerDeg = (w / 2) / AZ_MAX;
+        actualX = ((CX + hdgCentered * pxPerDeg) % w + w) % w;
+    }
+    if (ht > 0) {
+        const pxPerDeg = (ht / 2) / EL_MAX;
+        actualY = clamp(CY - pitch * pxPerDeg, 0, ht);
+    }
+    const actualWrapX = actualX < CX ? actualX + w : actualX - w;
+
+    const blueReticle = (bx, by, key) => {
+        const s = 12;
+        return h('g', { key, opacity: 0.9 },
+            h('polygon', {
+                points: `${bx},${by-s} ${bx+s},${by} ${bx},${by+s} ${bx-s},${by}`,
+                fill: 'none', stroke: 'var(--blue)', 'stroke-width': 1.8,
+            }),
+            h('circle', { cx: bx, cy: by, r: 2.5, fill: 'var(--blue)' }),
+            h('line', { x1:bx, y1:by-s-5, x2:bx, y2:by-s, stroke:'var(--blue)', 'stroke-width':1.2 }),
+            h('line', { x1:bx, y1:by+s, x2:bx, y2:by+s+5, stroke:'var(--blue)', 'stroke-width':1.2 }),
+            h('line', { x1:bx-s-5, y1:by, x2:bx-s, y2:by, stroke:'var(--blue)', 'stroke-width':1.2 }),
+            h('line', { x1:bx+s, y1:by, x2:bx+s+5, y2:by, stroke:'var(--blue)', 'stroke-width':1.2 }),
+        );
+    };
+
+    const hintText = !trigArm ? 'ARM TURRET TO AIM' : 'CLICK TO AIM';
+
     return h('div', { class: `aim-pad${locked ? ' locked' : ''}`, ref: padRef, onClick: handleClick },
-        h('svg', { width: w, height: h, style:{ position:'absolute', inset:0 } },
-            h('line', { x1:CX, y1:0,  x2:CX, y2:h, stroke:'var(--border)', 'stroke-width':0.5 }),
+        h('svg', { width: w, height: ht, style:{ position:'absolute', inset:0, overflow:'hidden' } },
+            h('line', { x1:CX, y1:0,  x2:CX, y2:ht, stroke:'var(--border)', 'stroke-width':0.5 }),
             h('line', { x1:0,  y1:CY, x2:w,  y2:CY, stroke:'var(--border)', 'stroke-width':0.5 }),
             ...rings, ...degTicks, ...corners,
-            // crosshair
-            h('line', { x1:vizX-18, y1:vizY, x2:vizX+18, y2:vizY, stroke:color, 'stroke-width':1.5 }),
-            h('line', { x1:vizX, y1:vizY-18, x2:vizX, y2:vizY+18, stroke:color, 'stroke-width':1.5 }),
-            h('circle', { cx:vizX, cy:vizY, r:14, fill:'none', stroke:color, 'stroke-width':1.5, opacity:0.75 }),
-            h('circle', { cx:vizX, cy:vizY, r:2, fill:color }),
+            blueReticle(actualX, actualY, 'bp-main'),
+            blueReticle(actualWrapX, actualY, 'bp-wrap'),
+            crosshairAt(vizX, vizY, 'ch-main'),
+            crosshairAt(wrapX, vizY, 'ch-wrap'),
         ),
-        !locked && h('div', { class:'aim-hint' }, 'CLICK TO AIM'),
+        !locked && h('div', { class:'aim-hint' }, hintText),
         locked  && h('div', { class:'aim-locked-badge' }, 'LOCKED · ESC TO RELEASE'),
-        h('div', { class:'aim-coords' },
-            `AZ ${az >= 0 ? '+' : ''}${az}°   EL ${el >= 0 ? '+' : ''}${el}°`,
-        ),
+        h('div', { class:'aim-coords' }, `AZ ${azStr}°   EL ${elStr}°`),
         h('button', {
             onClick: reset,
             style: {
@@ -331,9 +425,7 @@ function AimPad() {
     );
 }
 
-// ── BarrelMonitor ──────────────────────────────────────────────────────────
-// 2 coils, 1 photoresistor each (positioned just ahead of coil)
-// coilState: 0=idle 1=charged 2=firing 3=discharged
+// ── BarrelMonitor ──────────────────────────────────────────────────────
 function BarrelMonitor({ coilStates, sensorStates, lastShot }) {
     const VB_W = 700, VB_H = 110;
     const CY   = 55, TUBE_H = 18, TUBE_Y = CY - TUBE_H / 2;
@@ -342,7 +434,6 @@ function BarrelMonitor({ coilStates, sensorStates, lastShot }) {
         { cx: 195, w: 90, h: 52 },
         { cx: 455, w: 90, h: 52 },
     ];
-    // sensors just ahead of each coil (cx + w/2 + gap)
     const SENSORS = [COILS[0].cx + COILS[0].w / 2 + 22, COILS[1].cx + COILS[1].w / 2 + 22];
 
     const COIL_COLS   = ['#111a14', 'var(--cyan)', 'var(--red)', '#2a1414'];
@@ -356,14 +447,13 @@ function BarrelMonitor({ coilStates, sensorStates, lastShot }) {
         const cy2 = CY - c.h / 2;
         const glow = cs === 2 ? `drop-shadow(0 0 7px var(--red))`
             : cs === 1 ? `drop-shadow(0 0 4px var(--cyan))` : 'none';
-        // winding lines
         const nLines = 9;
         const windings = Array.from({ length: nLines }, (_, l) => {
             const ly = cy2 + 4 + l * ((c.h - 8) / (nLines - 1));
             return h('line', { key:l, x1:x+2, y1:ly, x2:x+c.w-2, y2:ly,
                 stroke: COIL_STROKE[cs], 'stroke-width':0.8, opacity:0.45 });
         });
-        return h('g', { key:i },
+        return h('g', { key:'coil-'+i },
             h('rect', { x, y:cy2, width:c.w, height:c.h,
                 fill: COIL_COLS[cs], stroke: COIL_STROKE[cs], 'stroke-width':1.5,
                 style:{ filter: glow } }),
@@ -385,7 +475,7 @@ function BarrelMonitor({ coilStates, sensorStates, lastShot }) {
         const col    = active ? 'var(--green)' : 'var(--dim)';
         const glow   = active ? 'drop-shadow(0 0 5px var(--green))' : 'none';
         const tipY   = TUBE_Y - 3, baseY = tipY - 17;
-        return h('g', { key:i },
+        return h('g', { key:'sen-'+i },
             h('polygon', {
                 points:`${sx},${tipY} ${sx-7},${baseY} ${sx+7},${baseY}`,
                 fill:col, opacity: active ? 1 : 0.35,
@@ -408,23 +498,17 @@ function BarrelMonitor({ coilStates, sensorStates, lastShot }) {
     const BREECH_X = 30, MUZZLE_X = 668;
 
     return h('svg', { width:'100%', height:'100%', viewBox:`0 0 ${VB_W} ${VB_H}`, preserveAspectRatio:'xMidYMid meet' },
-        // bore tube
         h('rect', { x:BREECH_X, y:TUBE_Y, width:MUZZLE_X-BREECH_X, height:TUBE_H,
             fill:'#080c0e', stroke:'var(--border2)', 'stroke-width':1 }),
-        // bore axis
         h('line', { x1:BREECH_X+14, y1:CY, x2:MUZZLE_X, y2:CY,
             stroke:'var(--border)', 'stroke-width':0.5, 'stroke-dasharray':'4 6' }),
-        // coils
         ...coilEls,
-        // sensors
         ...sensorEls,
-        // breech cap
         h('rect', { x:BREECH_X-12, y:TUBE_Y-8, width:14, height:TUBE_H+16,
             fill:'var(--surf2)', stroke:'var(--border2)', 'stroke-width':1.5 }),
         h('text', { x:BREECH_X-5, y:CY+5, 'text-anchor':'middle', 'font-size':8,
             fill:'var(--dim)', 'font-family':'var(--font-mono)',
             transform:`rotate(-90,${BREECH_X-5},${CY})` }, 'BREECH'),
-        // muzzle
         h('rect', { x:MUZZLE_X, y:TUBE_Y-6, width:12, height:TUBE_H+12,
             fill:'var(--surf2)', stroke:'var(--border2)', 'stroke-width':1.5 }),
         h('text', { x:MUZZLE_X+6, y:CY+5, 'text-anchor':'middle', 'font-size':8,
@@ -433,7 +517,7 @@ function BarrelMonitor({ coilStates, sensorStates, lastShot }) {
     );
 }
 
-// ── LastShotPanel ──────────────────────────────────────────────────────────
+// ── LastShotPanel ──────────────────────────────────────────────────────
 function LastShotPanel({ shot }) {
     if (!shot) return h('div', { style:{ color:'var(--dim)', fontSize:'11px', fontFamily:'var(--font-ui)', letterSpacing:'1px' } }, '— no shots fired —');
     const rows = [
@@ -452,108 +536,101 @@ function LastShotPanel({ shot }) {
     );
 }
 
-// ── ControlPanel (root) ────────────────────────────────────────────────────
+
+// ══════════════════════════════════════════════════════════════════════════
+//  CONTROL PANEL (root)
+// ══════════════════════════════════════════════════════════════════════════
+
 function ControlPanel() {
-    // ── arm state
+    // ── All display state — written exclusively by transport events
     const [masterArm, setMasterArm] = useState(false);
     const [trigArm,   setTrigArm]   = useState(false);
     const [gunArm,    setGunArm]    = useState(false);
-
-    // ── charge
-    const [targetV, setTargetV] = useState(200);
-
-    // ── telemetry (simulated)
-    const [ping,    setPing]    = useState(12);
-    const [heading, setHeading] = useState(38);
-    const [pitch,   setPitch]   = useState(8);
-    const [m1,      setM1]      = useState({ angle: 24,  vel: 55,  acc: -30 });
-    const [m2,      setM2]      = useState({ angle: -12, vel: -38, acc: 18  });
-    const [cap1,    setCap1]    = useState({ v: 248, pct: 62 });
-    const [cap2,    setCap2]    = useState({ v: 180, pct: 45 });
-
-    // ── shot state
+    const [targetV,   setTargetV]   = useState(80);
+    const [heading,   setHeading]   = useState(38);
+    const [pitch,     setPitch]     = useState(8);
+    const [m1,        setM1]        = useState({ angle: 23, vel: 0, acc: 0 });
+    const [m2,        setM2]        = useState({ angle: 15, vel: 0, acc: 0 });
+    const [cap1,      setCap1]      = useState(62);
+    const [cap2,      setCap2]      = useState(45);
     const [shots,     setShots]     = useState(0);
     const [lastShot,  setLastShot]  = useState(null);
-    const [coilState, setCoilState] = useState([1, 1]);   // 0idle 1charged 2firing 3discharged
+    const [coilState, setCoilState] = useState([1, 1]);
     const [sensorSt,  setSensorSt]  = useState([false, false]);
 
-    // ── arm gating
+    // Refs forwarded to transport for sim slewing / cap charging
+    const aimRef     = useRef({ az: 38, el: 8 });
+    const targetVRef = useRef(80);
+
+    // ── Transport
+    const { on, send, connState, ping } = useTransport({ aimRef, targetVRef, mode });
+
+    // ── Wire up event listeners (mode-agnostic)
+    useEffect(() => {
+        on('telemetry', msg => {
+            if (msg.heading  !== undefined) setHeading(msg.heading);
+            if (msg.pitch    !== undefined) setPitch(msg.pitch);
+            if (msg.cap1     !== undefined) setCap1(msg.cap1);
+            if (msg.cap2     !== undefined) setCap2(msg.cap2);
+            if (msg.motor_a) setM1(msg.motor_a);
+            if (msg.motor_b) setM2(msg.motor_b);
+            if (msg.coils)   setCoilState(msg.coils);
+            if (msg.sensors) setSensorSt(msg.sensors);
+        });
+
+        on('state', msg => {
+            if (msg.master_arm !== undefined) setMasterArm(msg.master_arm);
+            if (msg.trig_arm   !== undefined) setTrigArm(msg.trig_arm);
+            if (msg.gun_arm    !== undefined) setGunArm(msg.gun_arm);
+            if (msg.target_v   !== undefined) setTargetV(msg.target_v);
+            if (msg.shots      !== undefined) setShots(msg.shots);
+            if (msg.lastShot)                 setLastShot(msg.lastShot);
+            if (msg.coils)                    setCoilState(msg.coils);
+            if (msg.sensors)                  setSensorSt(msg.sensors);
+        });
+
+        on('shot', msg => {
+            if (msg.count !== undefined) setShots(msg.count);
+            if (msg.data) setLastShot(msg.data);
+        });
+    }, [on]);
+
+    // ── Disarm display on disconnect
+    useEffect(() => {
+        if (connState !== 'connected') {
+            setMasterArm(false); setTrigArm(false); setGunArm(false);
+        }
+    }, [connState]);
+
+    // ── Command dispatchers (no mode checks — transport handles it)
+    const handleAim = useCallback((az, el) => {
+        aimRef.current = { az, el };
+        send('aim', { az, el });
+    }, [send]);
+
     const handleMaster = useCallback(v => {
-        setMasterArm(v);
-        if (!v) { setTrigArm(false); setGunArm(false); }
-    }, []);
-    const handleTrig = useCallback(v => { if (masterArm) setTrigArm(v); }, [masterArm]);
-    const handleGun  = useCallback(v => { if (masterArm) setGunArm(v);  }, [masterArm]);
+        send('arm', { master: v, ...(v ? {} : { trig: false, gun: false }) });
+    }, [send]);
 
-    const canFire = trigArm && gunArm;
+    const handleTrig = useCallback(v => {
+        send('arm', { trig: v });
+    }, [send]);
 
-    // ── fire sequence
+    const handleGun = useCallback(v => {
+        send('arm', { gun: v });
+    }, [send]);
+
+    const handleTargetV = useCallback(v => {
+        targetVRef.current = v;
+        send('set_voltage', { voltage: v });
+    }, [send]);
+
     const handleFire = useCallback(() => {
-        setShots(s => s + 1);
+        send('fire', {});
+    }, [send]);
 
-        // coil / sensor animation sequence
-        setCoilState([2, 1]); setSensorSt([false, false]);
-
-        const t1 = 420 + Math.random() * 80;
-        const t2 = 390 + Math.random() * 80;
-
-        setTimeout(() => {
-            setSensorSt([true, false]);
-            setTimeout(() => {
-                setCoilState([3, 2]);
-                setTimeout(() => {
-                    setSensorSt([true, true]);
-                    setTimeout(() => {
-                        setCoilState([3, 3]);
-                        const v1    = (0.15 / (t1 / 1e6)).toFixed(1);
-                        const v2    = (0.15 / (t2 / 1e6)).toFixed(1);
-                        const d1    = Math.round(40 + Math.random() * 30);
-                        const d2    = Math.round(35 + Math.random() * 25);
-                        setLastShot({ t1: t1.toFixed(0), t2: t2.toFixed(0), v1, v2, drain1: d1, drain2: d2 });
-                        // drain caps
-                        setCap1(c => ({ v: Math.max(0, c.v - d1), pct: Math.max(0, c.pct - (d1 / targetV) * 100) }));
-                        setCap2(c => ({ v: Math.max(0, c.v - d2), pct: Math.max(0, c.pct - (d2 / targetV) * 100) }));
-                        setTimeout(() => { setCoilState([1, 1]); setSensorSt([false, false]); }, 1800);
-                    }, 55);
-                }, t2 / 1000);
-            }, 40);
-        }, t1 / 1000);
-    }, [targetV]);
-
-    // ── telemetry sim
-    useEffect(() => {
-        const id = setInterval(() => {
-            setHeading(h => ((h + (Math.random() - 0.48) * 0.7) + 360) % 360);
-            setPitch  (p => clamp(p + (Math.random() - 0.5) * 0.35, -45, 45));
-            setM1(m  => ({
-                angle: clamp(m.angle + m.vel * 0.008, -180, 180),
-                vel:   clamp(m.vel   + (Math.random() - 0.5) * 3.5, -100, 100),
-                acc:   clamp(m.acc   + (Math.random() - 0.5) * 5,   -100, 100),
-            }));
-            setM2(m  => ({
-                angle: clamp(m.angle + m.vel * 0.008, -180, 180),
-                vel:   clamp(m.vel   + (Math.random() - 0.5) * 3.5, -100, 100),
-                acc:   clamp(m.acc   + (Math.random() - 0.5) * 5,   -100, 100),
-            }));
-            // slow recharge
-            setCap1(c => {
-                const nv = Math.min(targetV, c.v + 1.8);
-                return { v: nv, pct: (nv / targetV) * 100 };
-            });
-            setCap2(c => {
-                const nv = Math.min(targetV, c.v + 1.8);
-                return { v: nv, pct: (nv / targetV) * 100 };
-            });
-        }, 80);
-        return () => clearInterval(id);
-    }, [targetV]);
-
-    useEffect(() => {
-        const id = setInterval(() => setPing(8 + Math.random() * 22), 1200);
-        return () => clearInterval(id);
-    }, []);
-
-    // ── clock
+    // ── Clock
+    const canFire = trigArm && gunArm;
     const [uptime, setUptime] = useState('00:00:00');
     const startRef = useRef(Date.now());
     useEffect(() => {
@@ -569,14 +646,19 @@ function ControlPanel() {
 
     const pingColor = ping < 20 ? 'var(--green)' : ping < 50 ? 'var(--amber)' : 'var(--red)';
 
+    const connDot = connState === 'connected'
+        ? { bg: 'var(--green)', shadow: '0 0 7px var(--green)', label: mode === 'sim' ? 'SIM' : 'CONNECTED' }
+        : connState === 'connecting'
+            ? { bg: 'var(--amber)', shadow: '0 0 7px var(--amber)', label: 'CONNECTING' }
+            : { bg: 'var(--red)',   shadow: '0 0 7px var(--red)',   label: 'DISCONNECTED' };
+
     return h('div', { class:'root-grid' },
-        h('style', null, `@keyframes blink{0%,100%{opacity:1}50%{opacity:.35}}`),
 
         // ── Topbar ──────────────────────────────────────────────────────
         h('div', { class:'topbar' },
-            h('div', { style:{ width:9, height:9, borderRadius:'50%', flexShrink:0, background:'var(--green)', boxShadow:'0 0 7px var(--green)' } }),
-            h('span', { style:{ color:'var(--green)' } }, 'CONNECTED'),
-            h('span', { style:{ color: pingColor, marginLeft:2 } }, ping.toFixed(0) + 'ms'),
+            h('div', { style:{ width:9, height:9, borderRadius:'50%', flexShrink:0, background:connDot.bg, boxShadow:connDot.shadow } }),
+            h('span', { style:{ color:connDot.bg } }, connDot.label),
+            connState === 'connected' && h('span', { style:{ color: pingColor, marginLeft:2 } }, ping.toFixed(0) + 'ms'),
             h('div',  { style:{ width:1, height:18, background:'var(--border)', margin:'0 4px' } }),
             trigArm && h('div', { class:'arm-tag' }, '⚠ TRIG ARMED'),
             gunArm  && h('div', { class:'arm-tag', style:{ borderColor:'var(--red)', color:'var(--red)', background:'#f03a3a12' } }, '⚠ GUN ARMED'),
@@ -587,16 +669,14 @@ function ControlPanel() {
         // ── Controls column ─────────────────────────────────────────────
         h('div', { class:'controls-col' },
 
-            // Master arm
             h('div', { class:'section' },
                 h('div', { class:'section-label' }, 'Interlock'),
                 h('div', { class:'toggle-row' },
                     h('span', { class:`toggle-name${masterArm ? ' amber' : ''}` }, 'MASTER ARM'),
-                    h(Toggle, { on: masterArm, onChange: handleMaster }),
+                    h(Toggle, { on: masterArm, onChange: handleMaster, disabled: connState !== 'connected' }),
                 ),
             ),
 
-            // Turret + gun arm
             h('div', { class:'section' },
                 h('div', { class:'section-label' }, 'Arm'),
                 h('div', { class:'toggle-row' },
@@ -609,29 +689,25 @@ function ControlPanel() {
                 ),
             ),
 
-            // Voltage
-            h(VoltSlider, { value: targetV, onChange: setTargetV, locked: gunArm }),
+            h(VoltSlider, { value: targetV, onChange: handleTargetV, locked: gunArm }),
 
-            // Fire
             h('div', { class:'section' },
                 h('div', { class:'section-label' }, 'Fire Control'),
                 h(FireButton, { ready: canFire, onFire: handleFire }),
                 h('div', { style:{ display:'flex', justifyContent:'space-between', alignItems:'center' } },
-                    h('span', { style:{ fontSize:9, color:'var(--dim)', fontFamily:'var(--font-ui)', letterSpacing:'1.5px', textTransform:'uppercase' } }, 'Hold 600ms'),
+                    h('span', { style:{ fontSize:10, color:'var(--dim)', fontFamily:'var(--font-ui)', letterSpacing:'1.5px', textTransform:'uppercase' } }, 'Hold 600ms'),
                     h('span', { style:{ fontSize:11, color:'var(--dim)', fontFamily:'var(--font-mono)' } }, `shots: ${shots}`),
                 ),
             ),
 
-            h('div', { style:{ flex:1 } }),  // spacer
+            h('div', { style:{ flex:1 } }),
         ),
 
         // ── Main area ────────────────────────────────────────────────────
         h('div', { class:'main-area' },
-
             h('div', { class:'aim-panel' },
-                h(AimPad),
+                h(AimPad, { heading, pitch, trigArm, onAim: handleAim }),
             ),
-
             h('div', { class:'barrel-panel' },
                 h('div', { class:'panel-label' }, 'BARREL MONITOR'),
                 h('div', { style:{ flex:1, padding:'8px 20px', display:'flex', alignItems:'center' } },
@@ -674,8 +750,8 @@ function ControlPanel() {
             h('div', { class:'telem-cell', style:{ width:130 } },
                 h('div', { class:'telem-cell-label' }, 'Cap Bank'),
                 h('div', { style:{ display:'flex', gap:10, height:'100%', paddingBottom:4 } },
-                    h(CapBar, { voltage: cap1.v, pct: cap1.pct, targetV, name:'C1' }),
-                    h(CapBar, { voltage: cap2.v, pct: cap2.pct, targetV, name:'C2' }),
+                    h(CapBar, { voltage: cap1, targetV, name:'C1' }),
+                    h(CapBar, { voltage: cap2, targetV, name:'C2' }),
                 ),
             ),
 
