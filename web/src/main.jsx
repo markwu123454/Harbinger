@@ -389,7 +389,7 @@ function AimPad({ heading, elevation, trigArm, onAim }) {
         );
     };
 
-    const hintText = !trigArm ? 'ARM TURRET TO AIM' : 'CLICK TO AIM';
+    const hintText = !trigArm ? 'TURRET DISARMED' : 'CLICK TO AIM';
 
     return h('div', { class: `aim-pad${locked ? ' locked' : ''}`, ref: padRef, onClick: handleClick },
         h('svg', { width: w, height: ht, style:{ position:'absolute', inset:0, overflow:'hidden' } },

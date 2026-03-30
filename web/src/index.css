@@ -89,7 +89,7 @@ html, body {
 /* ── Main area ── */
 .main-area {
     display: grid;
-    grid-template-rows: 1fr 152px;
+    grid-template-rows: 1fr 252px;
     overflow: hidden;
 }
 
