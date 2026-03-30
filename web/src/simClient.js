@@ -4,7 +4,7 @@ export function createSimClient({ aimRef, targetVRef }) {
 
     let state = {
         heading: 38,
-        pitch: 8,
+        elevation: 8,
         mA: 23,
         mB: 15,
         vA: 0,
@@ -63,12 +63,12 @@ export function createSimClient({ aimRef, targetVRef }) {
             const tv  = targetVRef.current;
 
             // target motor angles from aim command
-            //   heading = mA + mB,  pitch = mA - mB
-            //   so mA = (heading + pitch) / 2,  mB = (heading - pitch) / 2
-            let aimH = aim.az;
+            //   heading = mA + mB,  elevation = mA - mB
+            //   so mA = (heading + elevation) / 2,  mB = (heading - elevation) / 2
+            let aimH = aim.heading;
             if (aimH > 180) aimH -= 360;
-            const tgtA = (aimH + aim.el) / 2;
-            const tgtB = (aimH - aim.el) / 2;
+            const tgtA = (aimH + aim.elevation) / 2;
+            const tgtB = (aimH - aim.elevation) / 2;
 
             // Shortest-arc targets: offset each target so the error
             // relative to current position is in -180..180, then PD
@@ -88,14 +88,14 @@ export function createSimClient({ aimRef, targetVRef }) {
             let vB = state.vB + accB * DT;
             let mB = state.mB + vB * DT;
 
-            // derive turret heading / pitch from motor angles
+            // derive turret heading / elevation from motor angles
             let h = mA + mB;
-            let p = mA - mB;
+            let e = mA - mB;
 
             // wrap heading into 0..360 for display only
             h = ((h % 360) + 360) % 360;
-            // clamp pitch
-            p = clamp(p, -60, 60);
+            // clamp elevation
+            e = clamp(e, -60, 60);
 
             // cap recharge toward target
             state.cap1 = Math.min(tv, state.cap1 + 0.6);
@@ -103,7 +103,7 @@ export function createSimClient({ aimRef, targetVRef }) {
 
             state = {
                 ...state,
-                heading: h, pitch: p,
+                heading: h, elevation: e,
                 mA, mB,
                 vA, vB,
                 aA: accA, aB: accB,
@@ -112,7 +112,7 @@ export function createSimClient({ aimRef, targetVRef }) {
             emit({
                 type: 'telemetry',
                 heading: h,
-                pitch: p,
+                elevation: e,
                 motor_a: { angle: mA, vel: vA, acc: accA },
                 motor_b: { angle: mB, vel: vB, acc: accB },
                 cap1: state.cap1,

@@ -198,11 +198,11 @@ function Compass({ heading }) {
     );
 }
 
-// ── PitchView ──────────────────────────────────────────────────────────
-function PitchView({ pitch }) {
+// ── ElevationView ──────────────────────────────────────────────────────────
+function ElevationView({ elevation }) {
     const W = 128, H = 104, mid = H / 2;
     const scale = (mid * 0.78) / 45;
-    const hy    = clamp(mid - pitch * scale, 0, H);
+    const hy    = clamp(mid - elevation * scale, 0, H);
 
     const graticules = [-30, -15, 0, 15, 30].map(v => {
         const y    = mid - v * scale;
@@ -225,13 +225,13 @@ function PitchView({ pitch }) {
             ...graticules,
         ),
         h('div', { style: { fontSize:'18px', fontWeight:'700', fontFamily:'var(--font-mono)' } },
-            sign(pitch) + '°',
+            sign(elevation) + '°',
         ),
     );
 }
 
 // ── AimPad ─────────────────────────────────────────────────────────────
-function AimPad({ heading, pitch, trigArm, onAim }) {
+function AimPad({ heading, elevation, trigArm, onAim }) {
     const padRef    = useRef(null);
     const rawRef    = useRef(null);
     const initRef   = useRef(false);
@@ -239,7 +239,7 @@ function AimPad({ heading, pitch, trigArm, onAim }) {
     const [locked, setLocked] = useState(false);
     const [size,   setSize]   = useState({ w: 0, h: 0 });
 
-    const AZ_MAX = 180, EL_MAX = 60;
+    const HDG_MAX = 180, ELV_MAX = 60;
 
     useEffect(() => {
         const obs = new ResizeObserver(([e]) => {
@@ -254,13 +254,13 @@ function AimPad({ heading, pitch, trigArm, onAim }) {
         initRef.current = true;
         const hdgNorm = ((heading % 360) + 360) % 360;
         const hdgCentered = hdgNorm > 180 ? hdgNorm - 360 : hdgNorm;
-        const pxPerDegX = (size.w / 2) / AZ_MAX;
-        const pxPerDegY = (size.h / 2) / EL_MAX;
+        const pxPerDegX = (size.w / 2) / HDG_MAX;
+        const pxPerDegY = (size.h / 2) / ELV_MAX;
         const initX = hdgCentered * pxPerDegX;
-        const initY = -pitch * pxPerDegY;
+        const initY = -elevation * pxPerDegY;
         rawRef.current = { x: initX, y: initY };
         setPos({ x: initX, y: initY });
-    }, [size, heading, pitch]);
+    }, [size, heading, elevation]);
 
     useEffect(() => {
         if (!trigArm && document.pointerLockElement === padRef.current)
@@ -276,8 +276,8 @@ function AimPad({ heading, pitch, trigArm, onAim }) {
             raw.y += e.movementY * 0.38;
             const { h: ch } = size;
             if (ch > 0) {
-                const pxPerDeg = (ch / 2) / EL_MAX;
-                const maxPxY = EL_MAX * pxPerDeg;
+                const pxPerDeg = (ch / 2) / ELV_MAX;
+                const maxPxY = ELV_MAX * pxPerDeg;
                 raw.y = clamp(raw.y, -maxPxY, maxPxY);
             }
             setPos({ x: raw.x, y: raw.y });
@@ -302,40 +302,32 @@ function AimPad({ heading, pitch, trigArm, onAim }) {
         if (!locked && padRef.current) padRef.current.requestPointerLock();
     }, [locked, trigArm]);
 
-    const reset = useCallback(e => {
-        e.stopPropagation();
-        if (!rawRef.current) rawRef.current = { x: 0, y: 0 };
-        rawRef.current.x = 0;
-        rawRef.current.y = 0;
-        setPos({ x: 0, y: 0 });
-    }, []);
-
     const { w, h: ht } = size;
     const CX = w / 2, CY = ht / 2;
     const maxR = Math.min(w, ht) * 0.44;
     const color = locked ? 'var(--red)' : 'var(--cyan)';
 
-    let azDeg = 0, elDeg = 0;
+    let hdgDeg = 0, elvDeg = 0;
     if (w > 0) {
-        const pxPerDeg = (w / 2) / AZ_MAX;
-        azDeg = pos.x / pxPerDeg;           // unbounded, keeps accumulating
+        const pxPerDeg = (w / 2) / HDG_MAX;
+        hdgDeg = pos.x / pxPerDeg;           // unbounded, keeps accumulating
     }
     if (ht > 0) {
-        const pxPerDeg = (ht / 2) / EL_MAX;
-        elDeg = clamp(-(pos.y / pxPerDeg), -EL_MAX, EL_MAX);
+        const pxPerDeg = (ht / 2) / ELV_MAX;
+        elvDeg = clamp(-(pos.y / pxPerDeg), -ELV_MAX, ELV_MAX);
     }
     // Display value wraps to -180..+180
-    const displayAzDeg = ((azDeg % 360 + 540) % 360) - 180;
+    const displayHdgDeg = ((hdgDeg % 360 + 540) % 360) - 180;
 
     useEffect(() => {
-        if (onAim) onAim(azDeg, elDeg);
-    }, [azDeg, elDeg]);
+        if (onAim) onAim(hdgDeg, elvDeg);
+    }, [hdgDeg, elvDeg]);
 
     const vizX = w  ? ((CX + pos.x) % w  + w)  % w  : CX;
     const vizY = ht ? clamp(CY + pos.y, 0, ht) : CY;
 
-    const azStr = (displayAzDeg >= 0 ? '+' : '') + displayAzDeg.toFixed(1);
-    const elStr = (elDeg >= 0 ? '+' : '') + elDeg.toFixed(1);
+    const hdgStr = (displayHdgDeg >= 0 ? '+' : '') + displayHdgDeg.toFixed(1);
+    const elvStr = (elvDeg >= 0 ? '+' : '') + elvDeg.toFixed(1);
 
     const rings = [0.25, 0.5, 0.75, 1].map(f =>
         h('circle', { key:'r'+f, cx:CX, cy:CY, r: maxR*f, fill:'none', stroke:'var(--border)', 'stroke-width':0.5 })
@@ -373,12 +365,12 @@ function AimPad({ heading, pitch, trigArm, onAim }) {
     if (w > 0) {
         const hdgNorm = ((heading % 360) + 360) % 360;
         const hdgCentered = hdgNorm > 180 ? hdgNorm - 360 : hdgNorm;
-        const pxPerDeg = (w / 2) / AZ_MAX;
+        const pxPerDeg = (w / 2) / HDG_MAX;
         actualX = ((CX + hdgCentered * pxPerDeg) % w + w) % w;
     }
     if (ht > 0) {
-        const pxPerDeg = (ht / 2) / EL_MAX;
-        actualY = clamp(CY - pitch * pxPerDeg, 0, ht);
+        const pxPerDeg = (ht / 2) / ELV_MAX;
+        actualY = clamp(CY - elevation * pxPerDeg, 0, ht);
     }
     const actualWrapX = actualX < CX ? actualX + w : actualX - w;
 
@@ -411,17 +403,7 @@ function AimPad({ heading, pitch, trigArm, onAim }) {
         ),
         !locked && h('div', { class:'aim-hint' }, hintText),
         locked  && h('div', { class:'aim-locked-badge' }, 'LOCKED · ESC TO RELEASE'),
-        h('div', { class:'aim-coords' }, `AZ ${azStr}°   EL ${elStr}°`),
-        h('button', {
-            onClick: reset,
-            style: {
-                position:'absolute', bottom:'10px', right:'14px',
-                background:'var(--surf2)', border:'1px solid var(--border2)',
-                color:'var(--dim)', fontFamily:'var(--font-ui)', fontSize:'10px',
-                fontWeight:'700', letterSpacing:'1.5px', textTransform:'uppercase',
-                padding:'3px 10px', cursor:'pointer',
-            },
-        }, 'RESET'),
+        h('div', { class:'aim-coords' }, `HDG ${hdgStr}°   ELV ${elvStr}°`),
     );
 }
 
@@ -548,7 +530,7 @@ function ControlPanel() {
     const [gunArm,    setGunArm]    = useState(false);
     const [targetV,   setTargetV]   = useState(80);
     const [heading,   setHeading]   = useState(38);
-    const [pitch,     setPitch]     = useState(8);
+    const [elevation, setElevation] = useState(8);
     const [m1,        setM1]        = useState({ angle: 23, vel: 0, acc: 0 });
     const [m2,        setM2]        = useState({ angle: 15, vel: 0, acc: 0 });
     const [cap1,      setCap1]      = useState(62);
@@ -559,7 +541,7 @@ function ControlPanel() {
     const [sensorSt,  setSensorSt]  = useState([false, false]);
 
     // Refs forwarded to transport for sim slewing / cap charging
-    const aimRef     = useRef({ az: 38, el: 8 });
+    const aimRef     = useRef({ heading: 38, elevation: 8 });
     const targetVRef = useRef(80);
 
     // ── Transport
@@ -569,7 +551,7 @@ function ControlPanel() {
     useEffect(() => {
         on('telemetry', msg => {
             if (msg.heading  !== undefined) setHeading(msg.heading);
-            if (msg.pitch    !== undefined) setPitch(msg.pitch);
+            if (msg.elevation !== undefined) setElevation(msg.elevation);
             if (msg.cap1     !== undefined) setCap1(msg.cap1);
             if (msg.cap2     !== undefined) setCap2(msg.cap2);
             if (msg.motor_a) setM1(msg.motor_a);
@@ -603,9 +585,9 @@ function ControlPanel() {
     }, [connState]);
 
     // ── Command dispatchers (no mode checks — transport handles it)
-    const handleAim = useCallback((az, el) => {
-        aimRef.current = { az, el };
-        send('aim', { az, el });
+    const handleAim = useCallback((heading, elevation) => {
+        aimRef.current = { heading, elevation };
+        send('aim', { heading, elevation });
     }, [send]);
 
     const handleMaster = useCallback(v => {
@@ -706,7 +688,7 @@ function ControlPanel() {
         // ── Main area ────────────────────────────────────────────────────
         h('div', { class:'main-area' },
             h('div', { class:'aim-panel' },
-                h(AimPad, { heading, pitch, trigArm, onAim: handleAim }),
+                h(AimPad, { heading, elevation, trigArm, onAim: handleAim }),
             ),
             h('div', { class:'barrel-panel' },
                 h('div', { class:'panel-label' }, 'BARREL MONITOR'),
@@ -725,8 +707,8 @@ function ControlPanel() {
             ),
 
             h('div', { class:'telem-cell', style:{ width:148 } },
-                h('div', { class:'telem-cell-label' }, 'Pitch'),
-                h(PitchView, { pitch }),
+                h('div', { class:'telem-cell-label' }, 'Elevation'),
+                h(ElevationView, { elevation }),
             ),
 
             h('div', { class:'telem-cell', style:{ width:124 } },

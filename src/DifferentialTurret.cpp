@@ -67,29 +67,29 @@ TurretMode DifferentialTurret::getMode() const {
     return _mode;
 }
 
-void DifferentialTurret::setTarget(const float pan, const float tilt) {
-    _pan_target = pan;
-    _tilt_target = tilt;
+void DifferentialTurret::setTarget(const float heading, const float elevation) {
+    _heading_target = heading;
+    _elevation_target = elevation;
 }
 
 void DifferentialTurret::mixAndApply() {
-    // Differential mixing: both spin same way = pan, opposite = tilt
+    // Differential mixing: both spin same way = heading, opposite = elevation
     // Scale by gear ratio to convert output commands to motor-side values
-    const float pan_motor  = _pan_target  * _config.gear_ratio_pan;
-    const float tilt_motor = _tilt_target * _config.gear_ratio_tilt;
+    const float hdg_motor = _heading_target   * _config.gear_ratio_heading;
+    const float elv_motor = _elevation_target * _config.gear_ratio_elevation;
 
-    _motorA.target = pan_motor + tilt_motor;
-    _motorB.target = pan_motor - tilt_motor;
+    _motorA.target = hdg_motor + elv_motor;
+    _motorB.target = hdg_motor - elv_motor;
 }
 
-float DifferentialTurret::getPan() const {
-    // Average of both motors / gear ratio gives output pan
-    return (_motorA.shaft_angle + _motorB.shaft_angle) / 2.0f / _config.gear_ratio_pan;
+float DifferentialTurret::getHeading() const {
+    // Average of both motors / gear ratio gives output heading
+    return (_motorA.shaft_angle + _motorB.shaft_angle) / 2.0f / _config.gear_ratio_heading;
 }
 
-float DifferentialTurret::getTilt() const {
-    // Difference of both motors / gear ratio gives output tilt
-    return (_motorA.shaft_angle - _motorB.shaft_angle) / 2.0f / _config.gear_ratio_tilt;
+float DifferentialTurret::getElevation() const {
+    // Difference of both motors / gear ratio gives output elevation
+    return (_motorA.shaft_angle - _motorB.shaft_angle) / 2.0f / _config.gear_ratio_elevation;
 }
 
 void DifferentialTurret::setVoltageLimit(const float volts) {
