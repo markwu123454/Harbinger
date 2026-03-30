@@ -4,6 +4,7 @@
 #include <ESPAsyncWebServer.h>
 #include <AsyncTCP.h>
 #include <DNSServer.h>
+#include <DifferentialTurret.h>
 
 // ── Config ────────────────────────────────────────────────
 auto AP_SSID   = "Harbinger";
