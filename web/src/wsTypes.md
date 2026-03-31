@@ -42,7 +42,7 @@ type Aim = {
 
 ```ts
 // Set arming state
-// Disarming master should also send trig/gun false
+// Disarming master should also send turret/gun false
 type Arm = {
     type: 'arm'
     master?: boolean
@@ -60,7 +60,7 @@ type SetVoltage = {
 ```
 
 ```ts
-// Only valid when trig + gun armed
+// Only valid when turret + gun armed
 type Fire = {
     type: 'fire'
 }
@@ -94,7 +94,7 @@ type Telemetry = {
 type State = {
     type: 'state'
     master_arm?: boolean
-    trig_arm?: boolean
+    turret_arm?: boolean
     gun_arm?: boolean
     target_v?: number // V
     stage_count?: number

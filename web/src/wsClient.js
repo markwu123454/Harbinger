@@ -23,6 +23,8 @@ export function createWsClient(url) {
         stateListeners.forEach(cb => cb(s));
     };
 
+    let pingInterval = null;
+
     const connect = () => {
         setConnState('connecting');
 
@@ -32,7 +34,8 @@ export function createWsClient(url) {
             setConnState('connected');
 
             // simple ping loop
-            setInterval(() => {
+            if (pingInterval) clearInterval(pingInterval);
+            pingInterval = setInterval(() => {
                 if (ws.readyState !== 1) return;
                 lastPingSent = Date.now();
                 ws.send(JSON.stringify({ type: 'ping' }));
@@ -51,6 +54,7 @@ export function createWsClient(url) {
         };
 
         ws.onclose = () => {
+            if (pingInterval) { clearInterval(pingInterval); pingInterval = null; }
             setConnState('disconnected');
         };
 

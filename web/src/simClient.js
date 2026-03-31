@@ -45,10 +45,14 @@ export function createSimClient({ aimRef, targetVRef }) {
             trig_arm: state.trig_arm,
             gun_arm: state.gun_arm,
             target_v: targetVRef.current,
-            shots: state.shots,
-            lastShot: state.lastShot,
+            stage_count: 2,
+        });
+        // Also push coils/sensors as telemetry delta
+        emit({
+            type: 'telemetry',
             coils: state.coils,
             sensors: state.sensors,
+            caps: [state.cap1, state.cap2],
         });
     };
 
@@ -115,8 +119,7 @@ export function createSimClient({ aimRef, targetVRef }) {
                 elevation: e,
                 motor_a: { angle: mA, vel: vA, acc: accA },
                 motor_b: { angle: mB, vel: vB, acc: accB },
-                cap1: state.cap1,
-                cap2: state.cap2,
+                caps: [state.cap1, state.cap2],
                 coils: state.coils,
                 sensors: state.sensors,
             });
@@ -182,8 +185,9 @@ export function createSimClient({ aimRef, targetVRef }) {
                             state.cap1 = Math.max(0, state.cap1 - d1);
                             state.cap2 = Math.max(0, state.cap2 - d2);
                             state.lastShot = {
-                                t1: t1.toFixed(0), t2: t2.toFixed(0),
-                                v1, v2, drain1: d1, drain2: d2,
+                                t: [Math.round(t1), Math.round(t2)],
+                                v: [parseFloat(v1), parseFloat(v2)],
+                                drain: [d1, d2],
                             };
 
                             emitFullState();

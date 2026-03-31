@@ -448,7 +448,7 @@ function BarrelMonitor({ coilStates, sensorStates, lastShot }) {
                 `COIL ${i+1}`),
             lastShot && h('text', { x:c.cx, y:cy2-16, 'text-anchor':'middle', 'font-size':9,
                     fill:'var(--amber)', 'font-family':'var(--font-mono)' },
-                `−${i===0 ? lastShot.drain1 : lastShot.drain2}V`),
+                `−${lastShot.drain[i]}V`),
         );
     });
 
@@ -469,10 +469,10 @@ function BarrelMonitor({ coilStates, sensorStates, lastShot }) {
             lastShot && h('g', null,
                 h('text', { x:sx, y:CY+TUBE_H/2+24, 'text-anchor':'middle', 'font-size':9,
                         fill:'var(--cyan)', 'font-family':'var(--font-mono)' },
-                    `${i===0 ? lastShot.t1 : lastShot.t2}µs`),
+                    `${lastShot.t[i]}µs`),
                 h('text', { x:sx, y:CY+TUBE_H/2+37, 'text-anchor':'middle', 'font-size':9,
                         fill:'var(--green)', 'font-family':'var(--font-mono)' },
-                    `${i===0 ? lastShot.v1 : lastShot.v2}m/s`),
+                    `${lastShot.v[i]}m/s`),
             ),
         );
     });
@@ -503,12 +503,12 @@ function BarrelMonitor({ coilStates, sensorStates, lastShot }) {
 function LastShotPanel({ shot }) {
     if (!shot) return h('div', { style:{ color:'var(--dim)', fontSize:'11px', fontFamily:'var(--font-ui)', letterSpacing:'1px' } }, '— no shots fired —');
     const rows = [
-        ['C1 INTERVAL', shot.t1 + ' µs',  'var(--cyan)'],
-        ['C2 INTERVAL', shot.t2 + ' µs',  'var(--cyan)'],
-        ['V STAGE 1',   shot.v1 + ' m/s', 'var(--green)'],
-        ['V STAGE 2',   shot.v2 + ' m/s', 'var(--green)'],
-        ['C1 DRAIN',    '−' + shot.drain1 + 'V', 'var(--amber)'],
-        ['C2 DRAIN',    '−' + shot.drain2 + 'V', 'var(--amber)'],
+        ['C1 INTERVAL', shot.t[0] + ' µs',  'var(--cyan)'],
+        ['C2 INTERVAL', shot.t[1] + ' µs',  'var(--cyan)'],
+        ['V STAGE 1',   shot.v[0] + ' m/s', 'var(--green)'],
+        ['V STAGE 2',   shot.v[1] + ' m/s', 'var(--green)'],
+        ['C1 DRAIN',    '−' + shot.drain[0] + 'V', 'var(--amber)'],
+        ['C2 DRAIN',    '−' + shot.drain[1] + 'V', 'var(--amber)'],
     ];
     return h('div', { class:'shot-grid' },
         ...rows.flatMap(([k, v, col]) => [
@@ -552,8 +552,7 @@ function ControlPanel() {
         on('telemetry', msg => {
             if (msg.heading  !== undefined) setHeading(msg.heading);
             if (msg.elevation !== undefined) setElevation(msg.elevation);
-            if (msg.cap1     !== undefined) setCap1(msg.cap1);
-            if (msg.cap2     !== undefined) setCap2(msg.cap2);
+            if (msg.caps) { setCap1(msg.caps[0]); setCap2(msg.caps[1]); }
             if (msg.motor_a) setM1(msg.motor_a);
             if (msg.motor_b) setM2(msg.motor_b);
             if (msg.coils)   setCoilState(msg.coils);
@@ -565,10 +564,6 @@ function ControlPanel() {
             if (msg.trig_arm   !== undefined) setTrigArm(msg.trig_arm);
             if (msg.gun_arm    !== undefined) setGunArm(msg.gun_arm);
             if (msg.target_v   !== undefined) setTargetV(msg.target_v);
-            if (msg.shots      !== undefined) setShots(msg.shots);
-            if (msg.lastShot)                 setLastShot(msg.lastShot);
-            if (msg.coils)                    setCoilState(msg.coils);
-            if (msg.sensors)                  setSensorSt(msg.sensors);
         });
 
         on('shot', msg => {
