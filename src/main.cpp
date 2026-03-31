@@ -158,8 +158,9 @@ DifferentialTurret turret;
         MotorSnapshot snap = motorRead();
 
         if (!snap.masterArm || !snap.turretArm) {
-            turret.setTarget(turret.getHeading(), turret.getElevation()); // hold
+            if (turret.getEnabled()) turret.disable();
         } else {
+            if (!turret.getEnabled()) turret.enable();
             turret.setTarget(
                 snap.targetHeading   * DEG_TO_RAD,
                 snap.targetElevation * DEG_TO_RAD
@@ -398,7 +399,7 @@ void setup() {
     dataMutex = xSemaphoreCreateMutex();
 
     xTaskCreatePinnedToCore(motorTask, "Motor", 8192, nullptr, 2, nullptr, 1);
-    xTaskCreatePinnedToCore(wifiTask,  "WiFi",  8192, nullptr, 1, nullptr, 0);
+    xTaskCreatePinnedToCore(wifiTask, "WiFi", 8192, nullptr, 1, nullptr, 0);
 }
 
 void loop() {

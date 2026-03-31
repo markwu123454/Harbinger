@@ -92,6 +92,24 @@ float DifferentialTurret::getElevation() const {
     return (_motorA.shaft_angle - _motorB.shaft_angle) / 2.0f / _config.gear_ratio_elevation;
 }
 
+void DifferentialTurret::enable()
+{
+    _driverA->enable();
+    _driverB->enable();
+    _enabled = true;
+}
+
+void DifferentialTurret::disable()
+{
+    _driverA->disable();
+    _driverB->disable();
+    _enabled = false;
+}
+
+bool DifferentialTurret::getEnabled() const {
+    return _enabled;
+}
+
 void DifferentialTurret::setVoltageLimit(const float volts) {
     _motorA.voltage_limit = volts;
     _motorB.voltage_limit = volts;

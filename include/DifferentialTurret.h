@@ -62,6 +62,10 @@ public:
     /// Adjust voltage limit at runtime (for thermal safety tuning)
     void setVoltageLimit(float volts);
 
+    void enable();
+    void disable();
+    [[nodiscard]] bool getEnabled() const;
+
     /// Access underlying motors for Commander integration
     BLDCMotor& motorA();
     BLDCMotor& motorB();
@@ -79,6 +83,7 @@ private:
     BLDCDriver3PWM* _driverB = nullptr;
 
     TurretMode  _mode = TurretMode::VELOCITY;
+    bool        _enabled = true;
     TurretConfig _config;
 
     float _heading_target   = 0.0f;
