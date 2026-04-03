@@ -2,33 +2,41 @@ export function createSimClient({ aimRef, targetVRef }) {
     let interval = null;
     let listeners = {};
 
+    // ── Internal server state ─────────────────────────────────────────────
+    // This is what the "server" actually holds. The UI never touches this
+    // directly — it only sees what gets emitted back.
     let state = {
-        heading: 38,
-        elevation: 8,
-        mA: 23,
-        mB: 15,
-        vA: 0,
-        vB: 0,
-        aA: 0,
-        aB: 0,
+        heading:    38,
+        elevation:  8,
+        mA: 23, mB: 15,
+        vA: 0,  vB: 0,
+        aA: 0,  aB: 0,
         cap1: 62,
         cap2: 45,
         shots: 0,
         master_arm: false,
-        trig_arm: false,
-        gun_arm: false,
-        coils: [1, 1],
-        sensors: [false, false],
-        lastShot: null,
+        trig_arm:   false,
+        gun_arm:    false,
+        coils:      [1, 1],
+        sensors:    [false, false],
+        lastShot:   null,
+        // Internal: target voltage as confirmed by server
+        confirmedV: 80,
+        // Lock out concurrent fire sequences
+        firing: false,
     };
 
     const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
     // PD gains
-    const KP = 12;      // proportional — stiffness
-    const KD = 4.5;     // derivative  — damping
-    const MAX_TORQUE = 320;  // deg/s² clamp (motor saturation)
+    const KP         = 12;   // proportional — stiffness
+    const KD         = 4.5;  // derivative   — damping
+    const MAX_TORQUE = 320;  // deg/s²
 
+    // Simulated sensor separation (metres) — used for velocity calculation
+    const SENSOR_SPACING = 0.05;
+
+    // ── Listener bus ──────────────────────────────────────────────────────
     const on = (type, cb) => {
         listeners[type] = listeners[type] || [];
         listeners[type].push(cb);
@@ -38,170 +46,205 @@ export function createSimClient({ aimRef, targetVRef }) {
         (listeners[msg.type] || []).forEach(cb => cb(msg));
     };
 
-    const emitFullState = () => {
+    // Emit the authoritative arm/voltage state back to the UI
+    const emitState = () => {
         emit({
-            type: 'state',
-            master_arm: state.master_arm,
-            trig_arm: state.trig_arm,
-            gun_arm: state.gun_arm,
-            target_v: targetVRef.current,
+            type:        'state',
+            master_arm:  state.master_arm,
+            trig_arm:    state.trig_arm,
+            gun_arm:     state.gun_arm,
+            target_v:    state.confirmedV,
             stage_count: 2,
-        });
-        // Also push coils/sensors as telemetry delta
-        emit({
-            type: 'telemetry',
-            coils: state.coils,
-            sensors: state.sensors,
-            caps: [state.cap1, state.cap2],
         });
     };
 
-    // shortest-arc delta: wraps diff into -180..180
+    // Emit cap + coil + sensor telemetry (called from tick and fire sequence)
+    const emitTelemetryAux = () => {
+        emit({
+            type:    'telemetry',
+            coils:   state.coils,
+            sensors: state.sensors,
+            caps:    [state.cap1, state.cap2],
+        });
+    };
+
+    // ── Simulated round-trip delay ────────────────────────────────────────
+    // Randomised 80–200 ms — represents MCU processing + USB/serial latency.
+    // An extra jitter spike (~5% chance) simulates occasional bus contention.
+    const roundTrip = () => {
+        const base  = 80 + Math.random() * 120;
+        const spike = Math.random() < 0.05 ? 200 + Math.random() * 300 : 0;
+        return base + spike;
+    };
+
+    // ── Shortest-arc wrap ─────────────────────────────────────────────────
     const wrapErr = d => d - 360 * Math.round(d / 360);
 
+    // ── Telemetry tick ────────────────────────────────────────────────────
     const start = () => {
-        const DT = 0.08;
+        const DT = 0.08; // seconds per tick (matches 80 ms setInterval below)
 
         interval = setInterval(() => {
             const aim = aimRef.current;
-            const tv  = targetVRef.current;
 
-            // target motor angles from aim command
-            //   heading = mA + mB,  elevation = mA - mB
-            //   so mA = (heading + elevation) / 2,  mB = (heading - elevation) / 2
+            // Map aim → motor targets
             let aimH = aim.heading;
             if (aimH > 180) aimH -= 360;
             const tgtA = (aimH + aim.elevation) / 2;
             const tgtB = (aimH - aim.elevation) / 2;
 
-            // Shortest-arc targets: offset each target so the error
-            // relative to current position is in -180..180, then PD
-            // drives the short way around.
+            // Nearest-arc targets
             const nearA = state.mA + wrapErr(tgtA - state.mA);
             const nearB = state.mB + wrapErr(tgtB - state.mB);
 
-            // ── PD controller for motor A
-            const errA = nearA - state.mA;
-            const accA = clamp(KP * errA - KD * state.vA, -MAX_TORQUE, MAX_TORQUE);
-            let vA = state.vA + accA * DT;
-            let mA = state.mA + vA * DT;
+            // PD — motor A
+            const errA  = nearA - state.mA;
+            const accA  = clamp(KP * errA - KD * state.vA, -MAX_TORQUE, MAX_TORQUE);
+            const vA    = state.vA + accA * DT;
+            const mA    = state.mA + vA   * DT;
 
-            // ── PD controller for motor B
-            const errB = nearB - state.mB;
-            const accB = clamp(KP * errB - KD * state.vB, -MAX_TORQUE, MAX_TORQUE);
-            let vB = state.vB + accB * DT;
-            let mB = state.mB + vB * DT;
+            // PD — motor B
+            const errB  = nearB - state.mB;
+            const accB  = clamp(KP * errB - KD * state.vB, -MAX_TORQUE, MAX_TORQUE);
+            const vB    = state.vB + accB * DT;
+            const mB    = state.mB + vB   * DT;
 
-            // derive turret heading / elevation from motor angles
-            let h = mA + mB;
-            let e = mA - mB;
+            // Derive heading / elevation
+            let h = ((( mA + mB) % 360) + 360) % 360;
+            let e = clamp(mA - mB, -60, 60);
 
-            // wrap heading into 0..360 for display only
-            h = ((h % 360) + 360) % 360;
-            // clamp elevation
-            e = clamp(e, -60, 60);
+            // Cap recharge — only toward server-confirmed target, not desired
+            const tv    = state.confirmedV;
+            const rate  = state.gun_arm ? 0.2 : 0.8; // slow recharge when gun armed
+            state.cap1  = Math.min(tv, state.cap1 + rate);
+            state.cap2  = Math.min(tv, state.cap2 + rate);
 
-            // cap recharge toward target
-            state.cap1 = Math.min(tv, state.cap1 + 0.6);
-            state.cap2 = Math.min(tv, state.cap2 + 0.6);
-
-            state = {
-                ...state,
-                heading: h, elevation: e,
-                mA, mB,
-                vA, vB,
-                aA: accA, aB: accB,
-            };
+            state = { ...state, heading: h, elevation: e, mA, mB, vA, vB, aA: accA, aB: accB };
 
             emit({
-                type: 'telemetry',
-                heading: h,
+                type:      'telemetry',
+                heading:   h,
                 elevation: e,
-                motor_a: { angle: mA, vel: vA, acc: accA },
-                motor_b: { angle: mB, vel: vB, acc: accB },
-                caps: [state.cap1, state.cap2],
-                coils: state.coils,
-                sensors: state.sensors,
+                motor_a:   { angle: mA, vel: vA, acc: accA },
+                motor_b:   { angle: mB, vel: vB, acc: accB },
+                caps:      [state.cap1, state.cap2],
+                coils:     state.coils,
+                sensors:   state.sensors,
             });
 
-        }, 50);
+        }, 80);
     };
 
     const stop = () => clearInterval(interval);
 
+    // ── Command handler (called by transport layer, acts as fake MCU) ─────
     const send = (type, payload = {}) => {
+
+        // ── aim: instant, no ack needed (position streams back via telemetry)
         if (type === 'aim') {
-            // handled via aimRef
+            // aimRef is already updated by the caller; nothing to do here
+            return;
         }
 
+        // ── set_voltage: MCU validates, updates charge target, acks
         if (type === 'set_voltage') {
-            targetVRef.current = payload.voltage;
-            emitFullState();
+            const requested = payload.voltage;
+            setTimeout(() => {
+                // Server clamps to valid range
+                state.confirmedV     = clamp(requested, 0, 120);
+                targetVRef.current   = state.confirmedV;
+                // Emit authoritative state — this is what clears the pending flag in the UI
+                emitState();
+            }, roundTrip());
+            return;
         }
 
+        // ── arm: MCU validates interlock logic, acks with resolved state
         if (type === 'arm') {
-            let master = payload.master ?? state.master_arm;
-            let trig   = payload.trig   ?? state.trig_arm;
-            let gun    = payload.gun    ?? state.gun_arm;
+            setTimeout(() => {
+                let master = payload.master ?? state.master_arm;
+                let trig   = payload.trig   ?? state.trig_arm;
+                let gun    = payload.gun    ?? state.gun_arm;
 
-            // enforce gating: disarming master cascades
-            if (!master) { trig = false; gun = false; }
-            // trig/gun require master
-            if (!master) { trig = false; gun = false; }
+                // Interlock: disarming master cascades; trig/gun require master
+                if (!master) { trig = false; gun = false; }
 
-            state = { ...state, master_arm: master, trig_arm: trig, gun_arm: gun };
-            emitFullState();
+                // MCU also refuses gun arm if caps are too low (safety gate)
+                if (gun && state.cap1 < 10 && state.cap2 < 10) {
+                    gun = false; // silently denied — UI will revert to confirmed=false
+                }
+
+                state = { ...state, master_arm: master, trig_arm: trig, gun_arm: gun };
+                // Single authoritative state emit — UI clears pending on receipt
+                emitState();
+            }, roundTrip());
+            return;
         }
 
+        // ── fire: immediate coil sequence, no pending state needed
         if (type === 'fire') {
-            if (!state.trig_arm || !state.gun_arm) return;
-
+            if (!state.trig_arm || !state.gun_arm || state.firing) return;
+            state.firing = true;
             state.shots++;
 
-            const t1 = 420 + Math.random() * 80;
-            const t2 = 390 + Math.random() * 80;
+            // Timing is proportional to cap voltage — higher voltage = shorter pulse needed
+            const capV = (state.cap1 + state.cap2) / 2;
+            const scaledBase = clamp(600 - capV * 2.5, 250, 700); // ~350µs at 100V, ~600µs at 0V
+            const t1 = Math.round(scaledBase + Math.random() * 60);
+            const t2 = Math.round(scaledBase * 0.93 + Math.random() * 60); // coil 2 slightly faster
 
-            // firing animation sequence
-            state.coils = [2, 1];
+            // ── Sequence: C1 fires ────────────────────────────────────────
+            state.coils   = [2, 1];
             state.sensors = [false, false];
-            emitFullState();
+            emitTelemetryAux();
 
+            // S1 trips (projectile passes sensor 1)
             setTimeout(() => {
                 state.sensors = [true, false];
-                emitFullState();
+                emitTelemetryAux();
+
+                // C1 done, C2 fires
                 setTimeout(() => {
-                    state.coils = [3, 2];
-                    emitFullState();
+                    state.coils   = [3, 2];
+                    emitTelemetryAux();
+
+                    // S2 trips (projectile passes sensor 2)
                     setTimeout(() => {
                         state.sensors = [true, true];
-                        emitFullState();
+                        emitTelemetryAux();
+
+                        // Both coils done — compute results
                         setTimeout(() => {
                             state.coils = [3, 3];
-                            const v1 = (0.15 / (t1 / 1e6)).toFixed(1);
-                            const v2 = (0.15 / (t2 / 1e6)).toFixed(1);
-                            const d1 = Math.round(8 + Math.random() * 12);
-                            const d2 = Math.round(6 + Math.random() * 10);
 
-                            state.cap1 = Math.max(0, state.cap1 - d1);
-                            state.cap2 = Math.max(0, state.cap2 - d2);
+                            // Velocity = sensor spacing / transit time
+                            const v1 = parseFloat((SENSOR_SPACING / (t1 / 1e6)).toFixed(1));
+                            const v2 = parseFloat((SENSOR_SPACING / (t2 / 1e6)).toFixed(1));
+
+                            // Drain scales with cap voltage (higher charge = more drain)
+                            const drainScale = clamp(capV / 80, 0.4, 1.2);
+                            const d1 = Math.round((8  + Math.random() * 10) * drainScale);
+                            const d2 = Math.round((6  + Math.random() * 8)  * drainScale);
+
+                            state.cap1     = Math.max(0, state.cap1 - d1);
+                            state.cap2     = Math.max(0, state.cap2 - d2);
                             state.lastShot = {
-                                t: [Math.round(t1), Math.round(t2)],
-                                v: [parseFloat(v1), parseFloat(v2)],
+                                t:     [t1, t2],
+                                v:     [v1, v2],
                                 drain: [d1, d2],
                             };
 
-                            emitFullState();
-                            emit({
-                                type: 'shot',
-                                count: state.shots,
-                                data: state.lastShot,
-                            });
+                            emitTelemetryAux();
+                            emit({ type: 'shot', count: state.shots, data: state.lastShot });
 
+                            // Cool-down: coils back to idle
                             setTimeout(() => {
-                                state.coils = [1, 1];
+                                state.coils   = [1, 1];
                                 state.sensors = [false, false];
-                                emitFullState();
+                                state.firing  = false;
+                                emitTelemetryAux();
                             }, 1800);
+
                         }, 55);
                     }, t2 / 1000);
                 }, 40);

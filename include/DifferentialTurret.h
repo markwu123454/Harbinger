@@ -23,17 +23,13 @@ struct TurretPins {
 };
 
 struct TurretConfig {
-    float voltage_power_supply = 24.0f;
-    float voltage_limit        = 3.0f;     // start low, raise after testing
-    float velocity_limit       = 20.0f;    // rad/s safety cap
-
-    // GM4108H-120T defaults
-    int   pole_pairs           = 11;
-    float phase_resistance     = 11.1f;
-
-    // Gear ratios (motor turns : output turns)
-    float gear_ratio_heading   = 6.0f;
-    float gear_ratio_elevation = 6.0f;     // update once decided
+    float voltage_power_supply;
+    float voltage_limit;
+    float velocity_limit;
+    int   pole_pairs;
+    float phase_resistance;
+    float gear_ratio_heading;
+    float gear_ratio_elevation;
 };
 
 class DifferentialTurret {
@@ -41,7 +37,7 @@ public:
     DifferentialTurret();
 
     /// Call once in setup(). Initializes both motors and drivers.
-    void begin(const TurretPins& pins, const TurretConfig& config = TurretConfig());
+    void begin(const TurretPins& pins, const TurretConfig& config);
 
     /// Call every loop iteration. Runs FOC and motion control for both motors.
     void update();

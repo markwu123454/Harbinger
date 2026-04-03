@@ -1,9 +1,10 @@
 #include "DifferentialTurret.h"
 
 DifferentialTurret::DifferentialTurret()
-    : _motorA(11, 11.1f)   // defaults, overwritten in begin()
+    : _motorA(11, 11.1f) // defaults, overwritten in begin()
     , _motorB(11, 11.1f)
-{}
+    , _config() {
+}
 
 void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& config) {
     _config = config;

@@ -5,6 +5,7 @@ import {useTransport} from "./transport.js";
 // ── Constants ──────────────────────────────────────────────────────────────
 const MIN_V = 0, MAX_V = 120, DISPLAY_CAP_V = 160;
 const CAP_DANGER_V = 50;
+const PENDING_TIMEOUT_MS = 2000;
 
 // ── Mode: ?mode=sim | ?mode=ws | auto (try WS, fall back to sim) ──────────
 const mode = new URLSearchParams(location.search).get('mode');
@@ -20,39 +21,169 @@ function capColor(voltage, targetV) {
     return 'var(--green)';
 }
 
+// ── usePendingBool ─────────────────────────────────────────────────────────
+// Manages a boolean control that can be: confirmed-false | pending | confirmed-true
+// Returns [confirmedVal, pendingVal, setPending, clearPending]
+// setPending(desired) — starts the timeout clock
+// clearPending()      — call when server confirms; set the confirmed value externally
+function usePendingBool(confirmedVal) {
+    const [pendingVal, setPendingVal] = useState(null); // null = not pending
+    const timerRef = useRef(null);
+
+    const clearPending = useCallback(() => {
+        if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
+        setPendingVal(null);
+    }, []);
+
+    const setPending = useCallback((desired) => {
+        if (timerRef.current) clearTimeout(timerRef.current);
+        setPendingVal(desired);
+        timerRef.current = setTimeout(() => {
+            setPendingVal(null); // revert — confirmed state is already the truth
+        }, PENDING_TIMEOUT_MS);
+    }, []);
+
+    useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); }, []);
+
+    const isPending = pendingVal !== null;
+    // Visual display value: if pending, show the desired value (used for non-toggle display);
+    // the toggle itself uses a separate "indeterminate" render path
+    const displayVal = isPending ? pendingVal : confirmedVal;
+
+    return { confirmedVal, isPending, pendingDesired: pendingVal, displayVal, setPending, clearPending };
+}
+
+// ── usePendingVoltage ──────────────────────────────────────────────────────
+// Manages the voltage slider — desired floats freely; confirmed trails behind
+function usePendingVoltage(confirmedVal) {
+    const [desiredV, setDesiredV] = useState(confirmedVal);
+    const [isPending, setIsPending] = useState(false);
+    const timerRef = useRef(null);
+
+    // When confirmed changes (server update), sync desired only if not actively dragging
+    const draggingRef = useRef(false);
+    const prevConfirmed = useRef(confirmedVal);
+
+    const onDragStart = useCallback(() => { draggingRef.current = true; }, []);
+
+    const onDragEnd = useCallback(() => { draggingRef.current = false; }, []);
+
+    const setDesired = useCallback((v) => {
+        setDesiredV(v);
+        setIsPending(true);
+        if (timerRef.current) clearTimeout(timerRef.current);
+        timerRef.current = setTimeout(() => {
+            setIsPending(false);
+            setDesiredV(prevConfirmed.current); // revert to last confirmed
+        }, PENDING_TIMEOUT_MS);
+    }, []);
+
+    const clearPending = useCallback((newConfirmed) => {
+        if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
+        prevConfirmed.current = newConfirmed;
+        setIsPending(false);
+        if (!draggingRef.current) setDesiredV(newConfirmed);
+    }, []);
+
+    useEffect(() => {
+        // If confirmed changes while not pending, keep desired in sync
+        if (!isPending && confirmedVal !== prevConfirmed.current) {
+            prevConfirmed.current = confirmedVal;
+            if (!draggingRef.current) setDesiredV(confirmedVal);
+        }
+    }, [confirmedVal, isPending]);
+
+    useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); }, []);
+
+    return { desiredV, confirmedV: confirmedVal, isPending, setDesired, clearPending, onDragStart, onDragEnd };
+}
+
 
 // ══════════════════════════════════════════════════════════════════════════
 //  UI COMPONENTS
 // ══════════════════════════════════════════════════════════════════════════
 
 // ── Toggle ─────────────────────────────────────────────────────────────
-function Toggle({ on, onChange, disabled, variant = 'amber' }) {
-    const cls = ['toggle',
-        disabled              ? 'disabled' : '',
-        on && variant === 'amber' ? 'on'     : '',
-        on && variant === 'red'   ? 'gun-on' : '',
+// state: 'off' | 'pending' | 'on'
+// variant: 'amber' | 'red'
+function Toggle({ confirmedOn, isPending, onChange, disabled, variant = 'amber' }) {
+    const cls = [
+        'toggle',
+        disabled  ? 'disabled' : '',
+        isPending ? 'pending'  : '',
+        !isPending && confirmedOn && variant === 'amber' ? 'on'     : '',
+        !isPending && confirmedOn && variant === 'red'   ? 'gun-on' : '',
     ].filter(Boolean).join(' ');
 
+    // While pending: clicking again should cancel / re-send the opposite — up to the caller
+    const handleChange = useCallback((e) => {
+        if (!disabled && !isPending) onChange(e.target.checked);
+    }, [disabled, isPending, onChange]);
+
+    // Visual checked state: confirmed when not pending; desired (opposite of confirmed) when pending
+    const visualChecked = isPending ? !confirmedOn : confirmedOn;
+
     return h('label', { class: cls },
-        h('input', { type: 'checkbox', checked: on, disabled,
-            onChange: e => { if (!disabled) onChange(e.target.checked); } }),
+        h('input', {
+            type: 'checkbox',
+            checked: visualChecked,
+            disabled: disabled || isPending,
+            onChange: handleChange,
+        }),
         h('div', { class: 'toggle-track' }),
         h('div', { class: 'toggle-thumb' }),
+        isPending && h('div', { class: 'toggle-pending-pip' }),
     );
 }
 
 // ── VoltSlider ─────────────────────────────────────────────────────────
-function VoltSlider({ value, onChange, locked }) {
+function VoltSlider({ desiredV, confirmedV, onChange, locked, isPending, onDragStart, onDragEnd }) {
+    const confirmedPct = ((confirmedV - MIN_V) / (MAX_V - MIN_V)) * 100;
+
     return h('div', { class: 'section' },
         h('div', { class: 'section-label' }, 'Charge Target'),
-        h('div', { class: 'volt-display' }, value, h('span', { class: 'unit' }, 'V')),
-        h('input', {
-            type: 'range', class: 'volt-slider',
-            min: MIN_V, max: MAX_V, step: 1,
-            value,
-            disabled: locked,
-            onInput: e => onChange(parseInt(e.target.value)),
-        }),
+        h('div', { class: 'volt-display' },
+            h('span', { style: { color: isPending ? 'var(--amber)' : 'var(--text)' } }, desiredV),
+            h('span', { class: 'unit' }, 'V'),
+            isPending && h('span', {
+                style: {
+                    fontSize: '11px',
+                    color: 'var(--amber)',
+                    marginLeft: '8px',
+                    fontFamily: 'var(--font-ui)',
+                    letterSpacing: '1px',
+                    opacity: 0.9,
+                }
+            }, `(${confirmedV}V ✓)`),
+        ),
+        h('div', { style: { position: 'relative' } },
+            // Ghost tick for confirmed value
+            isPending && h('div', {
+                style: {
+                    position: 'absolute',
+                    left: `calc(${confirmedPct}% - 1px)`,
+                    top: 0, bottom: 0,
+                    width: '2px',
+                    background: 'var(--green)',
+                    opacity: 0.7,
+                    pointerEvents: 'none',
+                    zIndex: 2,
+                    borderRadius: '1px',
+                },
+            }),
+            h('input', {
+                type: 'range',
+                class: `volt-slider${isPending ? ' volt-pending' : ''}`,
+                min: MIN_V, max: MAX_V, step: 1,
+                value: desiredV,
+                disabled: locked,
+                onMouseDown: onDragStart,
+                onTouchStart: onDragStart,
+                onMouseUp: onDragEnd,
+                onTouchEnd: onDragEnd,
+                onInput: e => onChange(parseInt(e.target.value)),
+            }),
+        ),
         h('div', { style: { display:'flex', justifyContent:'space-between', fontSize:'10px', color:'var(--dim)', fontFamily:'var(--font-ui)', letterSpacing:'1px' } },
             h('span', null, MIN_V + 'V'),
             h('span', null, MAX_V + 'V'),
@@ -310,13 +441,12 @@ function AimPad({ heading, elevation, trigArm, onAim }) {
     let hdgDeg = 0, elvDeg = 0;
     if (w > 0) {
         const pxPerDeg = (w / 2) / HDG_MAX;
-        hdgDeg = pos.x / pxPerDeg;           // unbounded, keeps accumulating
+        hdgDeg = pos.x / pxPerDeg;
     }
     if (ht > 0) {
         const pxPerDeg = (ht / 2) / ELV_MAX;
         elvDeg = clamp(-(pos.y / pxPerDeg), -ELV_MAX, ELV_MAX);
     }
-    // Display value wraps to -180..+180
     const displayHdgDeg = ((hdgDeg % 360 + 540) % 360) - 180;
 
     useEffect(() => {
@@ -360,7 +490,6 @@ function AimPad({ heading, elevation, trigArm, onAim }) {
 
     const wrapX = vizX < CX ? vizX + w : vizX - w;
 
-    // Blue "actual pointing" reticle
     let actualX = CX, actualY = CY;
     if (w > 0) {
         const hdgNorm = ((heading % 360) + 360) % 360;
@@ -524,11 +653,19 @@ function LastShotPanel({ shot }) {
 // ══════════════════════════════════════════════════════════════════════════
 
 function ControlPanel() {
-    // ── All display state — written exclusively by transport events
-    const [masterArm, setMasterArm] = useState(false);
-    const [trigArm,   setTrigArm]   = useState(false);
-    const [gunArm,    setGunArm]    = useState(false);
-    const [targetV,   setTargetV]   = useState(80);
+    // ── Confirmed state — written ONLY by server events ───────────────────
+    const [masterArm,  setMasterArm]  = useState(false);
+    const [trigArm,    setTrigArm]    = useState(false);
+    const [gunArm,     setGunArm]     = useState(false);
+    const [confirmedV, setConfirmedV] = useState(80);
+
+    // ── Pending state hooks ───────────────────────────────────────────────
+    const masterPending = usePendingBool(masterArm);
+    const trigPending   = usePendingBool(trigArm);
+    const gunPending    = usePendingBool(gunArm);
+    const voltPending   = usePendingVoltage(confirmedV);
+
+    // ── Telemetry state ───────────────────────────────────────────────────
     const [heading,   setHeading]   = useState(38);
     const [elevation, setElevation] = useState(8);
     const [m1,        setM1]        = useState({ angle: 23, vel: 0, acc: 0 });
@@ -540,74 +677,104 @@ function ControlPanel() {
     const [coilState, setCoilState] = useState([1, 1]);
     const [sensorSt,  setSensorSt]  = useState([false, false]);
 
-    // Refs forwarded to transport for sim slewing / cap charging
+    // Refs forwarded to transport
     const aimRef     = useRef({ heading: 38, elevation: 8 });
     const targetVRef = useRef(80);
 
-    // ── Transport
+    // ── Transport ─────────────────────────────────────────────────────────
     const { on, send, connState, ping } = useTransport({ aimRef, targetVRef, mode });
 
-    // ── Wire up event listeners (mode-agnostic)
+    // ── Server event listeners ────────────────────────────────────────────
     useEffect(() => {
         on('telemetry', msg => {
-            if (msg.heading  !== undefined) setHeading(msg.heading);
+            if (msg.heading   !== undefined) setHeading(msg.heading);
             if (msg.elevation !== undefined) setElevation(msg.elevation);
-            if (msg.caps) { setCap1(msg.caps[0]); setCap2(msg.caps[1]); }
-            if (msg.motor_a) setM1(msg.motor_a);
-            if (msg.motor_b) setM2(msg.motor_b);
-            if (msg.coils)   setCoilState(msg.coils);
-            if (msg.sensors) setSensorSt(msg.sensors);
+            if (msg.caps)    { setCap1(msg.caps[0]); setCap2(msg.caps[1]); }
+            if (msg.motor_a)   setM1(msg.motor_a);
+            if (msg.motor_b)   setM2(msg.motor_b);
+            if (msg.coils)     setCoilState(msg.coils);
+            if (msg.sensors)   setSensorSt(msg.sensors);
         });
 
         on('state', msg => {
-            if (msg.master_arm !== undefined) setMasterArm(msg.master_arm);
-            if (msg.trig_arm   !== undefined) setTrigArm(msg.trig_arm);
-            if (msg.gun_arm    !== undefined) setGunArm(msg.gun_arm);
-            if (msg.target_v   !== undefined) setTargetV(msg.target_v);
+            // Server is the only authority — update confirmed values and clear pending
+            if (msg.master_arm !== undefined) {
+                setMasterArm(msg.master_arm);
+                masterPending.clearPending();
+            }
+            if (msg.trig_arm !== undefined) {
+                setTrigArm(msg.trig_arm);
+                trigPending.clearPending();
+            }
+            if (msg.gun_arm !== undefined) {
+                setGunArm(msg.gun_arm);
+                gunPending.clearPending();
+            }
+            if (msg.target_v !== undefined) {
+                setConfirmedV(msg.target_v);
+                voltPending.clearPending(msg.target_v);
+                targetVRef.current = msg.target_v;
+            }
         });
 
         on('shot', msg => {
             if (msg.count !== undefined) setShots(msg.count);
-            if (msg.data) setLastShot(msg.data);
+            if (msg.data)  setLastShot(msg.data);
         });
     }, [on]);
 
-    // ── Disarm display on disconnect
+    // ── Disarm on disconnect — clear pending too ──────────────────────────
     useEffect(() => {
         if (connState !== 'connected') {
             setMasterArm(false); setTrigArm(false); setGunArm(false);
+            masterPending.clearPending();
+            trigPending.clearPending();
+            gunPending.clearPending();
         }
     }, [connState]);
 
-    // ── Command dispatchers (no mode checks — transport handles it)
+    // ── Command dispatchers — send only, never setState ──────────────────
     const handleAim = useCallback((heading, elevation) => {
         aimRef.current = { heading, elevation };
         send('aim', { heading, elevation });
     }, [send]);
 
     const handleMaster = useCallback(v => {
+        masterPending.setPending(v);
         send('arm', { master: v, ...(v ? {} : { trig: false, gun: false }) });
-    }, [send]);
+    }, [send, masterPending]);
 
     const handleTrig = useCallback(v => {
+        trigPending.setPending(v);
         send('arm', { trig: v });
-    }, [send]);
+    }, [send, trigPending]);
 
     const handleGun = useCallback(v => {
+        gunPending.setPending(v);
         send('arm', { gun: v });
-    }, [send]);
+    }, [send, gunPending]);
 
     const handleTargetV = useCallback(v => {
+        voltPending.setDesired(v);
         targetVRef.current = v;
         send('set_voltage', { voltage: v });
-    }, [send]);
+    }, [send, voltPending]);
 
     const handleFire = useCallback(() => {
         send('fire', {});
     }, [send]);
 
-    // ── Clock
+    // ── Derived display values ────────────────────────────────────────────
+    // For arm badges and fire-ready: use confirmed state only — never show
+    // armed based solely on a pending request
     const canFire = trigArm && gunArm;
+
+    // For toggle disabled logic: locked if pending or upstream not confirmed
+    const masterDisabled = connState !== 'connected' || masterPending.isPending;
+    const trigDisabled   = !masterArm || trigPending.isPending;
+    const gunDisabled    = !masterArm || gunPending.isPending;
+
+    // ── Clock ─────────────────────────────────────────────────────────────
     const [uptime, setUptime] = useState('00:00:00');
     const startRef = useRef(Date.now());
     useEffect(() => {
@@ -637,8 +804,12 @@ function ControlPanel() {
             h('span', { style:{ color:connDot.bg } }, connDot.label),
             connState === 'connected' && h('span', { style:{ color: pingColor, marginLeft:2 } }, ping.toFixed(0) + 'ms'),
             h('div',  { style:{ width:1, height:18, background:'var(--border)', margin:'0 4px' } }),
-            trigArm && h('div', { class:'arm-tag' }, '⚠ TRIG ARMED'),
-            gunArm  && h('div', { class:'arm-tag', style:{ borderColor:'var(--red)', color:'var(--red)', background:'#f03a3a12' } }, '⚠ GUN ARMED'),
+            // Arm badges only reflect confirmed server state
+            trigArm && !trigPending.isPending && h('div', { class:'arm-tag' }, '⚠ TRIG ARMED'),
+            gunArm  && !gunPending.isPending  && h('div', { class:'arm-tag', style:{ borderColor:'var(--red)', color:'var(--red)', background:'#f03a3a12' } }, '⚠ GUN ARMED'),
+            // Pending badges
+            (masterPending.isPending || trigPending.isPending || gunPending.isPending) &&
+            h('div', { class:'arm-tag', style:{ borderColor:'var(--amber)', color:'var(--amber)', background:'var(--amber-bg)', animation:'pulse-amber 1s ease-in-out infinite' } }, '⟳ AWAITING SERVER'),
             h('div', { style:{ marginLeft:'auto', fontSize:15, fontWeight:900, letterSpacing:5, color:'var(--text)', fontFamily:'var(--font-ui)' } }, 'HARBINGER'),
             h('div', { style:{ fontSize:12, color:'var(--dim)', letterSpacing:2 } }, uptime),
         ),
@@ -649,24 +820,48 @@ function ControlPanel() {
             h('div', { class:'section' },
                 h('div', { class:'section-label' }, 'Interlock'),
                 h('div', { class:'toggle-row' },
-                    h('span', { class:`toggle-name${masterArm ? ' amber' : ''}` }, 'MASTER ARM'),
-                    h(Toggle, { on: masterArm, onChange: handleMaster, disabled: connState !== 'connected' }),
+                    h('span', { class:`toggle-name${masterArm ? ' amber' : ''}${masterPending.isPending ? ' pending-text' : ''}` }, 'MASTER ARM'),
+                    h(Toggle, {
+                        confirmedOn: masterArm,
+                        isPending:   masterPending.isPending,
+                        onChange:    handleMaster,
+                        disabled:    masterDisabled,
+                    }),
                 ),
             ),
 
             h('div', { class:'section' },
                 h('div', { class:'section-label' }, 'Arm'),
                 h('div', { class:'toggle-row' },
-                    h('span', { class:`toggle-name${trigArm ? ' amber' : ''}` }, 'TURRET'),
-                    h(Toggle, { on: trigArm, onChange: handleTrig, disabled: !masterArm }),
+                    h('span', { class:`toggle-name${trigArm ? ' amber' : ''}${trigPending.isPending ? ' pending-text' : ''}` }, 'TURRET'),
+                    h(Toggle, {
+                        confirmedOn: trigArm,
+                        isPending:   trigPending.isPending,
+                        onChange:    handleTrig,
+                        disabled:    trigDisabled,
+                    }),
                 ),
                 h('div', { class:'toggle-row' },
-                    h('span', { class:`toggle-name${gunArm ? ' red' : ''}` }, 'GUN'),
-                    h(Toggle, { on: gunArm, onChange: handleGun, disabled: !masterArm, variant:'red' }),
+                    h('span', { class:`toggle-name${gunArm ? ' red' : ''}${gunPending.isPending ? ' pending-text' : ''}` }, 'GUN'),
+                    h(Toggle, {
+                        confirmedOn: gunArm,
+                        isPending:   gunPending.isPending,
+                        onChange:    handleGun,
+                        disabled:    gunDisabled,
+                        variant:     'red',
+                    }),
                 ),
             ),
 
-            h(VoltSlider, { value: targetV, onChange: handleTargetV, locked: gunArm }),
+            h(VoltSlider, {
+                desiredV:    voltPending.desiredV,
+                confirmedV:  confirmedV,
+                onChange:    handleTargetV,
+                locked:      gunArm,
+                isPending:   voltPending.isPending,
+                onDragStart: voltPending.onDragStart,
+                onDragEnd:   voltPending.onDragEnd,
+            }),
 
             h('div', { class:'section' },
                 h('div', { class:'section-label' }, 'Fire Control'),
@@ -727,8 +922,9 @@ function ControlPanel() {
             h('div', { class:'telem-cell', style:{ width:130 } },
                 h('div', { class:'telem-cell-label' }, 'Cap Bank'),
                 h('div', { style:{ display:'flex', gap:10, height:'100%', paddingBottom:4 } },
-                    h(CapBar, { voltage: cap1, targetV, name:'C1' }),
-                    h(CapBar, { voltage: cap2, targetV, name:'C2' }),
+                    // Cap bar target tick uses confirmed voltage — not desired
+                    h(CapBar, { voltage: cap1, targetV: confirmedV, name:'C1' }),
+                    h(CapBar, { voltage: cap2, targetV: confirmedV, name:'C2' }),
                 ),
             ),
 
