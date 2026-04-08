@@ -738,7 +738,7 @@ function ControlPanel() {
     const handleAim = useCallback((heading, elevation) => {
         aimRef.current = { heading, elevation };
         const now = Date.now();
-        if (now - lastAimSendRef.current >= 333) {
+        if (now - lastAimSendRef.current >= 200) {
             lastAimSendRef.current = now;
             send('aim', { heading, elevation });
         }

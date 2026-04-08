@@ -71,7 +71,7 @@ void WifiTask::run() {
             Serial.printf("[WS] Broadcast state → %s\n", out.c_str());
         }
 
-        if (now - lastTelemetry > 500) {
+        if (now - lastTelemetry > 250) {
             JsonDocument doc;
             doc["type"]      = "telemetry";
             doc["heading"]   = round(snap.currentHeading   * 100) / 100;

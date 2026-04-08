@@ -1,1 +1,4 @@
 .pio
+*.step
+*.3mf
+*.stl
