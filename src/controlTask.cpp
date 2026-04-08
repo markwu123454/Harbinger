@@ -15,7 +15,7 @@ void ControlTask::run() {
     turret_.setMode(TurretMode::POSITION);
 
     for (;;) {
-        MotorSnapshot snap = motorRead();
+        const MotorSnapshot snap = motorRead();
 
         if (!snap.masterArm || !snap.turretArm) {
             if (turret_.getEnabled()) turret_.disable();

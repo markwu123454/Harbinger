@@ -15,7 +15,7 @@ export function createSimClient({ aimRef, targetVRef }) {
         cap2: 45,
         shots: 0,
         master_arm: false,
-        trig_arm:   false,
+        turret_arm:   false,
         gun_arm:    false,
         coils:      [1, 1],
         sensors:    [false, false],
@@ -51,7 +51,7 @@ export function createSimClient({ aimRef, targetVRef }) {
         emit({
             type:        'state',
             master_arm:  state.master_arm,
-            trig_arm:    state.trig_arm,
+            turret_arm:    state.turret_arm,
             gun_arm:     state.gun_arm,
             target_v:    state.confirmedV,
             stage_count: 2,
@@ -163,18 +163,18 @@ export function createSimClient({ aimRef, targetVRef }) {
         if (type === 'arm') {
             setTimeout(() => {
                 let master = payload.master ?? state.master_arm;
-                let trig   = payload.trig   ?? state.trig_arm;
+                let turret = payload.turret   ?? state.turret_arm;
                 let gun    = payload.gun    ?? state.gun_arm;
 
-                // Interlock: disarming master cascades; trig/gun require master
-                if (!master) { trig = false; gun = false; }
+                // Interlock: disarming master cascades; turret/gun require master
+                if (!master) { turret = false; gun = false; }
 
                 // MCU also refuses gun arm if caps are too low (safety gate)
                 if (gun && state.cap1 < 10 && state.cap2 < 10) {
                     gun = false; // silently denied — UI will revert to confirmed=false
                 }
 
-                state = { ...state, master_arm: master, trig_arm: trig, gun_arm: gun };
+                state = { ...state, master_arm: master, turret_arm: turret, gun_arm: gun };
                 // Single authoritative state emit — UI clears pending on receipt
                 emitState();
             }, roundTrip());
@@ -183,7 +183,7 @@ export function createSimClient({ aimRef, targetVRef }) {
 
         // ── fire: immediate coil sequence, no pending state needed
         if (type === 'fire') {
-            if (!state.trig_arm || !state.gun_arm || state.firing) return;
+            if (!state.turret_arm || !state.gun_arm || state.firing) return;
             state.firing = true;
             state.shots++;
 

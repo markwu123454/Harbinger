@@ -62,14 +62,16 @@ void wifiWriteAim(float heading, float elevation) {
 
 void wifiWriteArm(int masterArm, int turretArm, int gunArm) {
     xSemaphoreTake(dataMutex, portMAX_DELAY);
-    if (masterArm >= 0) shared.masterArm = masterArm;
-    if (turretArm >= 0) shared.turretArm = turretArm;
-    if (gunArm    >= 0) shared.gunArm    = gunArm;
-    if (masterArm == 0) {
+    bool changed = false;
+    if (masterArm >= 0 && shared.masterArm != (bool)masterArm) { shared.masterArm = masterArm; changed = true; }
+    if (turretArm >= 0 && shared.turretArm != (bool)turretArm) { shared.turretArm = turretArm; changed = true; }
+    if (gunArm    >= 0 && shared.gunArm    != (bool)gunArm)    { shared.gunArm    = gunArm;    changed = true; }
+    if (masterArm == 0 && (shared.turretArm || shared.gunArm)) {
         shared.turretArm = false;
         shared.gunArm    = false;
+        changed = true;
     }
-    shared.stateChanged = true;
+    if (changed) shared.stateChanged = true;
     xSemaphoreGive(dataMutex);
 }
 

@@ -362,7 +362,7 @@ function ElevationView({ elevation }) {
 }
 
 // ── AimPad ─────────────────────────────────────────────────────────────
-function AimPad({ heading, elevation, trigArm, onAim }) {
+function AimPad({ heading, elevation, turretArm, onAim }) {
     const padRef    = useRef(null);
     const rawRef    = useRef(null);
     const initRef   = useRef(false);
@@ -394,9 +394,9 @@ function AimPad({ heading, elevation, trigArm, onAim }) {
     }, [size, heading, elevation]);
 
     useEffect(() => {
-        if (!trigArm && document.pointerLockElement === padRef.current)
+        if (!turretArm && document.pointerLockElement === padRef.current)
             document.exitPointerLock();
-    }, [trigArm]);
+    }, [turretArm]);
 
     useEffect(() => {
         const onMove = e => {
@@ -429,9 +429,9 @@ function AimPad({ heading, elevation, trigArm, onAim }) {
     }, [size]);
 
     const handleClick = useCallback(() => {
-        if (!trigArm) return;
+        if (!turretArm) return;
         if (!locked && padRef.current) padRef.current.requestPointerLock();
-    }, [locked, trigArm]);
+    }, [locked, turretArm]);
 
     const { w, h: ht } = size;
     const CX = w / 2, CY = ht / 2;
@@ -518,7 +518,7 @@ function AimPad({ heading, elevation, trigArm, onAim }) {
         );
     };
 
-    const hintText = !trigArm ? 'TURRET DISARMED' : 'CLICK TO AIM';
+    const hintText = !turretArm ? 'TURRET DISARMED' : 'CLICK TO AIM';
 
     return h('div', { class: `aim-pad${locked ? ' locked' : ''}`, ref: padRef, onClick: handleClick },
         h('svg', { width: w, height: ht, style:{ position:'absolute', inset:0, overflow:'hidden' } },
@@ -655,13 +655,13 @@ function LastShotPanel({ shot }) {
 function ControlPanel() {
     // ── Confirmed state — written ONLY by server events ───────────────────
     const [masterArm,  setMasterArm]  = useState(false);
-    const [trigArm,    setTrigArm]    = useState(false);
+    const [turretArm,    setTrigArm]    = useState(false);
     const [gunArm,     setGunArm]     = useState(false);
     const [confirmedV, setConfirmedV] = useState(80);
 
     // ── Pending state hooks ───────────────────────────────────────────────
     const masterPending = usePendingBool(masterArm);
-    const trigPending   = usePendingBool(trigArm);
+    const turretPending   = usePendingBool(turretArm);
     const gunPending    = usePendingBool(gunArm);
     const voltPending   = usePendingVoltage(confirmedV);
 
@@ -702,9 +702,9 @@ function ControlPanel() {
                 setMasterArm(msg.master_arm);
                 masterPending.clearPending();
             }
-            if (msg.trig_arm !== undefined) {
-                setTrigArm(msg.trig_arm);
-                trigPending.clearPending();
+            if (msg.turret_arm !== undefined) {
+                setTrigArm(msg.turret_arm);
+                turretPending.clearPending();
             }
             if (msg.gun_arm !== undefined) {
                 setGunArm(msg.gun_arm);
@@ -728,26 +728,31 @@ function ControlPanel() {
         if (connState !== 'connected') {
             setMasterArm(false); setTrigArm(false); setGunArm(false);
             masterPending.clearPending();
-            trigPending.clearPending();
+            turretPending.clearPending();
             gunPending.clearPending();
         }
     }, [connState]);
 
     // ── Command dispatchers — send only, never setState ──────────────────
+    const lastAimSendRef = useRef(0);
     const handleAim = useCallback((heading, elevation) => {
         aimRef.current = { heading, elevation };
-        send('aim', { heading, elevation });
+        const now = Date.now();
+        if (now - lastAimSendRef.current >= 333) {
+            lastAimSendRef.current = now;
+            send('aim', { heading, elevation });
+        }
     }, [send]);
 
     const handleMaster = useCallback(v => {
         masterPending.setPending(v);
-        send('arm', { master: v, ...(v ? {} : { trig: false, gun: false }) });
+        send('arm', { master: v, ...(v ? {} : { turret: false, gun: false }) });
     }, [send, masterPending]);
 
-    const handleTrig = useCallback(v => {
-        trigPending.setPending(v);
-        send('arm', { trig: v });
-    }, [send, trigPending]);
+    const handleTurret = useCallback(v => {
+        turretPending.setPending(v);
+        send('arm', { turret: v });
+    }, [send, turretPending]);
 
     const handleGun = useCallback(v => {
         gunPending.setPending(v);
@@ -767,11 +772,11 @@ function ControlPanel() {
     // ── Derived display values ────────────────────────────────────────────
     // For arm badges and fire-ready: use confirmed state only — never show
     // armed based solely on a pending request
-    const canFire = trigArm && gunArm;
+    const canFire = turretArm && gunArm;
 
     // For toggle disabled logic: locked if pending or upstream not confirmed
     const masterDisabled = connState !== 'connected' || masterPending.isPending;
-    const trigDisabled   = !masterArm || trigPending.isPending;
+    const turretDisabled   = !masterArm || turretPending.isPending;
     const gunDisabled    = !masterArm || gunPending.isPending;
 
     // ── Clock ─────────────────────────────────────────────────────────────
@@ -805,10 +810,10 @@ function ControlPanel() {
             connState === 'connected' && h('span', { style:{ color: pingColor, marginLeft:2 } }, ping.toFixed(0) + 'ms'),
             h('div',  { style:{ width:1, height:18, background:'var(--border)', margin:'0 4px' } }),
             // Arm badges only reflect confirmed server state
-            trigArm && !trigPending.isPending && h('div', { class:'arm-tag' }, '⚠ TRIG ARMED'),
+            turretArm && !turretPending.isPending && h('div', { class:'arm-tag' }, '⚠ TURRET ARMED'),
             gunArm  && !gunPending.isPending  && h('div', { class:'arm-tag', style:{ borderColor:'var(--red)', color:'var(--red)', background:'#f03a3a12' } }, '⚠ GUN ARMED'),
             // Pending badges
-            (masterPending.isPending || trigPending.isPending || gunPending.isPending) &&
+            (masterPending.isPending || turretPending.isPending || gunPending.isPending) &&
             h('div', { class:'arm-tag', style:{ borderColor:'var(--amber)', color:'var(--amber)', background:'var(--amber-bg)', animation:'pulse-amber 1s ease-in-out infinite' } }, '⟳ AWAITING SERVER'),
             h('div', { style:{ marginLeft:'auto', fontSize:15, fontWeight:900, letterSpacing:5, color:'var(--text)', fontFamily:'var(--font-ui)' } }, 'HARBINGER'),
             h('div', { style:{ fontSize:12, color:'var(--dim)', letterSpacing:2 } }, uptime),
@@ -833,12 +838,12 @@ function ControlPanel() {
             h('div', { class:'section' },
                 h('div', { class:'section-label' }, 'Arm'),
                 h('div', { class:'toggle-row' },
-                    h('span', { class:`toggle-name${trigArm ? ' amber' : ''}${trigPending.isPending ? ' pending-text' : ''}` }, 'TURRET'),
+                    h('span', { class:`toggle-name${turretArm ? ' amber' : ''}${turretPending.isPending ? ' pending-text' : ''}` }, 'TURRET'),
                     h(Toggle, {
-                        confirmedOn: trigArm,
-                        isPending:   trigPending.isPending,
-                        onChange:    handleTrig,
-                        disabled:    trigDisabled,
+                        confirmedOn: turretArm,
+                        isPending:   turretPending.isPending,
+                        onChange:    handleTurret,
+                        disabled:    turretDisabled,
                     }),
                 ),
                 h('div', { class:'toggle-row' },
@@ -866,10 +871,6 @@ function ControlPanel() {
             h('div', { class:'section' },
                 h('div', { class:'section-label' }, 'Fire Control'),
                 h(FireButton, { ready: canFire, onFire: handleFire }),
-                h('div', { style:{ display:'flex', justifyContent:'space-between', alignItems:'center' } },
-                    h('span', { style:{ fontSize:10, color:'var(--dim)', fontFamily:'var(--font-ui)', letterSpacing:'1.5px', textTransform:'uppercase' } }, 'Hold 600ms'),
-                    h('span', { style:{ fontSize:11, color:'var(--dim)', fontFamily:'var(--font-mono)' } }, `shots: ${shots}`),
-                ),
             ),
 
             h('div', { style:{ flex:1 } }),
@@ -878,7 +879,7 @@ function ControlPanel() {
         // ── Main area ────────────────────────────────────────────────────
         h('div', { class:'main-area' },
             h('div', { class:'aim-panel' },
-                h(AimPad, { heading, elevation, trigArm, onAim: handleAim }),
+                h(AimPad, { heading, elevation, turretArm, onAim: handleAim }),
             ),
             h('div', { class:'barrel-panel' },
                 h('div', { class:'panel-label' }, 'BARREL MONITOR'),
