@@ -723,6 +723,17 @@ function ControlPanel() {
         });
     }, [on]);
 
+    // ── Disarm all on Enter key ───────────────────────────────────────────
+    useEffect(() => {
+        const handleKeyDown = (e) => {
+            if (e.key === 'Enter' && (masterArm || turretArm || gunArm)) {
+                handleMaster(false);
+            }
+        };
+        document.addEventListener('keydown', handleKeyDown);
+        return () => document.removeEventListener('keydown', handleKeyDown);
+    }, [masterArm, turretArm, gunArm]);
+
     // ── Disarm on disconnect — clear pending too ──────────────────────────
     useEffect(() => {
         if (connState !== 'connected') {

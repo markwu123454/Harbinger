@@ -12,8 +12,8 @@ constexpr uint8_t DNS_PORT = 53;
 // ── Turret ────────────────────────────────────────────────
 inline constexpr TurretConfig DEFAULT_TURRET_CONFIG {
     .voltage_power_supply = 24.0f,
-    .voltage_limit        = 8.0f,
-    .velocity_limit       = 5.0f,
+    .voltage_limit        = 3.0f,
+    .velocity_limit       = 15.0f,
     .pole_pairs           = 11,
     .phase_resistance     = 11.1f,
     .gear_ratio_heading   = 120.0f / 20.0f,
