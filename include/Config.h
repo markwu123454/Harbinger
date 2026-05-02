@@ -1,15 +1,10 @@
 #pragma once
-#include <IPAddress.h>
 #include "DifferentialTurret.h"
 
-// ── Network ───────────────────────────────────────────────
-inline constexpr const char* AP_SSID = "Harbinger";
-inline constexpr const char* AP_PASS = "";
-inline const IPAddress AP_IP(192, 168, 4, 1);
-inline const IPAddress AP_MASK(255, 255, 255, 0);
-constexpr uint8_t DNS_PORT = 53;
+// ── Bluetooth ─────────────────────────────────────────────────
+inline constexpr const char* BT_NAME = "Harbinger";
 
-// ── Turret ────────────────────────────────────────────────
+// ── Turret ────────────────────────────────────────────────────
 inline constexpr TurretConfig DEFAULT_TURRET_CONFIG {
     .voltage_power_supply = 24.0f,
     .voltage_limit        = 3.0f,
@@ -22,5 +17,5 @@ inline constexpr TurretConfig DEFAULT_TURRET_CONFIG {
 
 inline constexpr TurretPins DEFAULT_TURRET_PINS {
     .pwmA_a = 25, .pwmA_b = 26, .pwmA_c = 27, .enA = 14,
-    .pwmB_a = 17, .pwmB_b = 5, .pwmB_c = 19, .enB = 23
+    .pwmB_a = 17, .pwmB_b = 5,  .pwmB_c = 19, .enB = 23
 };
