@@ -1,13 +1,14 @@
 #include "DifferentialTurret.h"
+#include <Wire.h>
 
 DifferentialTurret::DifferentialTurret()
     : _motorA(11, 11.1f)
-      , _motorB(11, 11.1f)
-      , _config() {
+    , _motorB(11, 11.1f)
+    , _config() {
     Serial.printf("[TURRET] Constructor called with default motor params (poles=11, resistance=11.1)\n");
 }
 
-void DifferentialTurret::begin(const TurretPins &pins, const TurretConfig &config) {
+void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& config) {
     Serial.printf(
         "[TURRET] begin() called - poles=%d, resistance=%.2f, vps=%.2f, vlim=%.2f, vel_lim=%.2f, gr_hdg=%.3f, gr_elv=%.3f\n",
         config.pole_pairs, config.phase_resistance,
@@ -36,25 +37,58 @@ void DifferentialTurret::begin(const TurretPins &pins, const TurretConfig &confi
     _driverB->init();
     Serial.printf("[TURRET] Driver B init complete - vps=%.2f\n", config.voltage_power_supply);
 
+    // Init AS5600 encoders on separate I2C buses – both sensors share address 0x36
+    Wire.begin(pins.sdaA, pins.sclA);
+    Wire1.begin(pins.sdaB, pins.sclB);
+    Serial.printf("[TURRET] I2C bus 0: SDA=%d SCL=%d  |  bus 1: SDA=%d SCL=%d\n",
+                  pins.sdaA, pins.sclA, pins.sdaB, pins.sclB);
+
+    if (!_sensorA) _sensorA = new MagneticSensorI2C(AS5600_I2C);
+    if (!_sensorB) _sensorB = new MagneticSensorI2C(AS5600_I2C);
+    _sensorA->init(&Wire);
+    _sensorB->init(&Wire1);
+    Serial.printf("[TURRET] AS5600 sensors initialized\n");
+
     _motorA.linkDriver(_driverA);
-    _motorA.voltage_limit = config.voltage_limit;
+    _motorA.linkSensor(_sensorA);
+    _motorA.voltage_limit  = config.voltage_limit;
     _motorA.velocity_limit = config.velocity_limit;
-    _motorA.controller = velocity_openloop;
+    _motorA.controller     = velocity_openloop;
     _motorA.init();
     _motorA.initFOC();
-    Serial.printf("[TURRET] Motor A init+FOC complete - vlim=%.2f, vel_lim=%.2f, mode=velocity_openloop\n",
+    Serial.printf("[TURRET] Motor A init+FOC complete - vlim=%.2f, vel_lim=%.2f\n",
                   config.voltage_limit, config.velocity_limit);
 
     _motorB.linkDriver(_driverB);
-    _motorB.voltage_limit = config.voltage_limit;
+    _motorB.linkSensor(_sensorB);
+    _motorB.voltage_limit  = config.voltage_limit;
     _motorB.velocity_limit = config.velocity_limit;
-    _motorB.controller = velocity_openloop;
+    _motorB.controller     = velocity_openloop;
     _motorB.init();
     _motorB.initFOC();
-    Serial.printf("[TURRET] Motor B init+FOC complete - vlim=%.2f, vel_lim=%.2f, mode=velocity_openloop\n",
+    Serial.printf("[TURRET] Motor B init+FOC complete - vlim=%.2f, vel_lim=%.2f\n",
                   config.voltage_limit, config.velocity_limit);
 
     Serial.printf("[TURRET] begin() complete\n");
+}
+
+void DifferentialTurret::applyPIDConfig() {
+    _motorA.P_angle.P                = _config.angle_P;
+    _motorA.PID_velocity.P           = _config.velocity_P;
+    _motorA.PID_velocity.I           = _config.velocity_I;
+    _motorA.PID_velocity.D           = _config.velocity_D;
+    _motorA.PID_velocity.output_ramp = _config.velocity_ramp;
+    _motorA.LPF_velocity.Tf          = _config.velocity_lpf;
+
+    _motorB.P_angle.P                = _config.angle_P;
+    _motorB.PID_velocity.P           = _config.velocity_P;
+    _motorB.PID_velocity.I           = _config.velocity_I;
+    _motorB.PID_velocity.D           = _config.velocity_D;
+    _motorB.PID_velocity.output_ramp = _config.velocity_ramp;
+    _motorB.LPF_velocity.Tf          = _config.velocity_lpf;
+
+    Serial.printf("[TURRET] PID config applied - angle_P=%.2f, vel_P=%.3f, vel_I=%.3f, vel_D=%.4f\n",
+                  _config.angle_P, _config.velocity_P, _config.velocity_I, _config.velocity_D);
 }
 
 void DifferentialTurret::update() {
@@ -70,16 +104,30 @@ void DifferentialTurret::update() {
 void DifferentialTurret::setMode(const TurretMode mode) {
     _mode = mode;
 
-    const MotionControlType ct = (mode == TurretMode::VELOCITY)
-                                     ? velocity_openloop
-                                     : angle_openloop;
+    MotionControlType ct;
+    switch (mode) {
+        case TurretMode::VELOCITY:
+            ct = velocity_openloop;
+            break;
+        case TurretMode::POSITION:
+            ct = angle_openloop;
+            break;
+        case TurretMode::CLOSED_LOOP_POSITION:
+            ct = angle;
+            applyPIDConfig();
+            break;
+        default:
+            ct = velocity_openloop;
+    }
 
     _motorA.controller = ct;
     _motorB.controller = ct;
 
-    Serial.printf("[TURRET] setMode() - mode=%s, controller=%s\n",
-                  (mode == TurretMode::VELOCITY) ? "VELOCITY" : "ANGLE",
-                  (ct == velocity_openloop) ? "velocity_openloop" : "angle_openloop");
+    const char* modeStr = (mode == TurretMode::VELOCITY)            ? "VELOCITY"
+                        : (mode == TurretMode::POSITION)             ? "POSITION"
+                        : (mode == TurretMode::CLOSED_LOOP_POSITION) ? "CLOSED_LOOP_POSITION"
+                        : "UNKNOWN";
+    Serial.printf("[TURRET] setMode() - mode=%s\n", modeStr);
 }
 
 TurretMode DifferentialTurret::getMode() const {
@@ -89,7 +137,7 @@ TurretMode DifferentialTurret::getMode() const {
 void DifferentialTurret::setTarget(const float heading, const float elevation) {
     if (heading != _heading_target || elevation != _elevation_target) {
         Serial.printf("[TURRET] setTarget() - heading=%.4f, elevation=%.4f\n", heading, elevation);
-        _heading_target = heading;
+        _heading_target   = heading;
         _elevation_target = elevation;
     }
 }
@@ -101,7 +149,6 @@ void DifferentialTurret::mixAndApply() {
     const float tgtA = hdg_motor + elv_motor;
     const float tgtB = hdg_motor - elv_motor;
 
-    // Only log when targets actually change
     if (tgtA != _motorA.target || tgtB != _motorB.target) {
         Serial.printf("[TURRET] mixAndApply() - hdg_motor=%.4f, elv_motor=%.4f, tgtA=%.4f, tgtB=%.4f\n",
                       hdg_motor, elv_motor, tgtA, tgtB);
@@ -111,7 +158,6 @@ void DifferentialTurret::mixAndApply() {
     _motorB.target = tgtB;
 }
 
-// Remove Serial.printf from both - called every loop, zero value at steady state
 float DifferentialTurret::getHeading() const {
     return (_motorA.shaft_angle + _motorB.shaft_angle) / 2.0f / _config.gear_ratio_heading;
 }
@@ -144,5 +190,5 @@ void DifferentialTurret::setVoltageLimit(const float volts) {
     _motorB.voltage_limit = volts;
 }
 
-BLDCMotor &DifferentialTurret::motorA() { return _motorA; }
-BLDCMotor &DifferentialTurret::motorB() { return _motorB; }
+BLDCMotor& DifferentialTurret::motorA() { return _motorA; }
+BLDCMotor& DifferentialTurret::motorB() { return _motorB; }

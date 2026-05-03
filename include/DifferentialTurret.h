@@ -4,8 +4,9 @@
 #include <SimpleFOC.h>
 
 enum class TurretMode {
-    VELOCITY,   // joystick-style: heading/elevation rate commands
-    POSITION    // point-to-angle: heading/elevation angle commands
+    VELOCITY,              ///< open-loop velocity (joystick)
+    POSITION,              ///< open-loop angle
+    CLOSED_LOOP_POSITION   ///< closed-loop angle via AS5600 encoders
 };
 
 struct TurretPins {
@@ -20,6 +21,12 @@ struct TurretPins {
     int pwmB_b;
     int pwmB_c;
     int enB;
+
+    // AS5600 encoder I2C – two separate buses (both sensors share address 0x36)
+    int sdaA;   ///< Motor A encoder SDA (I2C bus 0)
+    int sclA;   ///< Motor A encoder SCL (I2C bus 0)
+    int sdaB;   ///< Motor B encoder SDA (I2C bus 1)
+    int sclB;   ///< Motor B encoder SCL (I2C bus 1)
 };
 
 struct TurretConfig {
@@ -30,28 +37,36 @@ struct TurretConfig {
     float phase_resistance;
     float gear_ratio_heading;
     float gear_ratio_elevation;
+    // Closed-loop PID gains (tune for your system)
+    float angle_P;           ///< position loop P gain
+    float velocity_P;        ///< velocity loop P gain
+    float velocity_I;        ///< velocity loop I gain
+    float velocity_D;        ///< velocity loop D gain
+    float velocity_ramp;     ///< velocity command ramp [rad/s^2]
+    float velocity_lpf;      ///< velocity measurement LPF time constant [s]
 };
 
 class DifferentialTurret {
 public:
     DifferentialTurret();
 
-    /// Call once in setup(). Initializes both motors and drivers.
+    /// Call once in setup(). Initializes motors, drivers, and AS5600 encoders.
     void begin(const TurretPins& pins, const TurretConfig& config);
 
     /// Call every loop iteration. Runs FOC and motion control for both motors.
     void update();
 
-    /// Set turret mode (velocity or position control)
+    /// Set turret mode
     void setMode(TurretMode mode);
     [[nodiscard]] TurretMode getMode() const;
 
     /// Set target in current mode:
-    ///   VELOCITY mode: heading_rate [rad/s], elevation_rate [rad/s] at the OUTPUT
-    ///   POSITION mode: heading_angle [rad], elevation_angle [rad] at the OUTPUT
+    ///   VELOCITY:              heading/elevation rate [rad/s] at output
+    ///   POSITION:              heading/elevation angle [rad] at output (open-loop)
+    ///   CLOSED_LOOP_POSITION:  heading/elevation angle [rad] at output (encoder-corrected)
     void setTarget(float heading, float elevation);
 
-    /// Read current output angles (estimated from open-loop integration)
+    /// Read current output angles (sensor-based in closed-loop, estimated otherwise)
     [[nodiscard]] float getHeading() const;
     [[nodiscard]] float getElevation() const;
 
@@ -67,20 +82,19 @@ public:
     BLDCMotor& motorB();
 
 private:
-    /// Convert heading/elevation targets to individual motor targets
-    /// Differential mixing:
-    ///   motorA = heading + elevation
-    ///   motorB = heading - elevation
     void mixAndApply();
+    void applyPIDConfig();
 
-    BLDCMotor       _motorA;
-    BLDCMotor       _motorB;
-    BLDCDriver3PWM* _driverA = nullptr;
-    BLDCDriver3PWM* _driverB = nullptr;
+    BLDCMotor          _motorA;
+    BLDCMotor          _motorB;
+    BLDCDriver3PWM*    _driverA  = nullptr;
+    BLDCDriver3PWM*    _driverB  = nullptr;
+    MagneticSensorI2C* _sensorA  = nullptr;
+    MagneticSensorI2C* _sensorB  = nullptr;
 
-    TurretMode  _mode = TurretMode::VELOCITY;
-    bool        _enabled = true;
-    TurretConfig _config;
+    TurretMode   _mode    = TurretMode::VELOCITY;
+    bool         _enabled = true;
+    TurretConfig _config  = {};
 
     float _heading_target   = 0.0f;
     float _elevation_target = 0.0f;
