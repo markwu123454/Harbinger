@@ -2,6 +2,8 @@
 
 #include <Arduino.h>
 #include <SimpleFOC.h>
+#include "TCA9548A.h"
+#include "MuxedMagneticSensor.h"
 
 enum class TurretMode {
     VELOCITY,              ///< open-loop velocity (joystick)
@@ -22,11 +24,12 @@ struct TurretPins {
     int pwmB_c;
     int enB;
 
-    // AS5600 encoder I2C – two separate buses (both sensors share address 0x36)
-    int sdaA;   ///< Motor A encoder SDA (I2C bus 0)
-    int sclA;   ///< Motor A encoder SCL (I2C bus 0)
-    int sdaB;   ///< Motor B encoder SDA (I2C bus 1)
-    int sclB;   ///< Motor B encoder SCL (I2C bus 1)
+    // TCA9548A I2C multiplexer (both AS5600s share address 0x36 via mux)
+    int     sda;      ///< I2C SDA
+    int     scl;      ///< I2C SCL
+    uint8_t muxAddr;  ///< TCA9548A address – A0/A1/A2 all GND = 0x70
+    uint8_t chanA;    ///< Mux channel wired to Motor A AS5600
+    uint8_t chanB;    ///< Mux channel wired to Motor B AS5600
 };
 
 struct TurretConfig {
@@ -50,7 +53,7 @@ class DifferentialTurret {
 public:
     DifferentialTurret();
 
-    /// Call once in setup(). Initializes motors, drivers, and AS5600 encoders.
+    /// Call once in setup(). Initializes motors, drivers, mux, and AS5600 encoders.
     void begin(const TurretPins& pins, const TurretConfig& config);
 
     /// Call every loop iteration. Runs FOC and motion control for both motors.
@@ -61,9 +64,9 @@ public:
     [[nodiscard]] TurretMode getMode() const;
 
     /// Set target in current mode:
-    ///   VELOCITY:              heading/elevation rate [rad/s] at output
-    ///   POSITION:              heading/elevation angle [rad] at output (open-loop)
-    ///   CLOSED_LOOP_POSITION:  heading/elevation angle [rad] at output (encoder-corrected)
+    ///   VELOCITY:             heading/elevation rate [rad/s] at output
+    ///   POSITION:             heading/elevation angle [rad] at output (open-loop)
+    ///   CLOSED_LOOP_POSITION: heading/elevation angle [rad] at output (encoder-corrected)
     void setTarget(float heading, float elevation);
 
     /// Read current output angles (sensor-based in closed-loop, estimated otherwise)
@@ -85,12 +88,13 @@ private:
     void mixAndApply();
     void applyPIDConfig();
 
-    BLDCMotor          _motorA;
-    BLDCMotor          _motorB;
-    BLDCDriver3PWM*    _driverA  = nullptr;
-    BLDCDriver3PWM*    _driverB  = nullptr;
-    MagneticSensorI2C* _sensorA  = nullptr;
-    MagneticSensorI2C* _sensorB  = nullptr;
+    BLDCMotor               _motorA;
+    BLDCMotor               _motorB;
+    BLDCDriver3PWM*         _driverA  = nullptr;
+    BLDCDriver3PWM*         _driverB  = nullptr;
+    TCA9548A                _mux;
+    MuxedMagneticSensorI2C* _sensorA  = nullptr;
+    MuxedMagneticSensorI2C* _sensorB  = nullptr;
 
     TurretMode   _mode    = TurretMode::VELOCITY;
     bool         _enabled = true;

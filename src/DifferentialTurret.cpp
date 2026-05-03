@@ -37,17 +37,21 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
     _driverB->init();
     Serial.printf("[TURRET] Driver B init complete - vps=%.2f\n", config.voltage_power_supply);
 
-    // Init AS5600 encoders on separate I2C buses – both sensors share address 0x36
-    Wire.begin(pins.sdaA, pins.sclA);
-    Wire1.begin(pins.sdaB, pins.sclB);
-    Serial.printf("[TURRET] I2C bus 0: SDA=%d SCL=%d  |  bus 1: SDA=%d SCL=%d\n",
-                  pins.sdaA, pins.sclA, pins.sdaB, pins.sclB);
+    // Init TCA9548A mux on a single I2C bus; both AS5600s share address 0x36
+    Wire.begin(pins.sda, pins.scl);
+    _mux = TCA9548A(pins.muxAddr);
+    _mux.begin(Wire);
+    Serial.printf("[TURRET] TCA9548A mux init - addr=0x%02X, SDA=%d, SCL=%d, chanA=%d, chanB=%d\n",
+                  pins.muxAddr, pins.sda, pins.scl, pins.chanA, pins.chanB);
 
-    if (!_sensorA) _sensorA = new MagneticSensorI2C(AS5600_I2C);
-    if (!_sensorB) _sensorB = new MagneticSensorI2C(AS5600_I2C);
+    // MuxedMagneticSensorI2C selects its channel inside getSensorAngle(),
+    // which is called by init() -> Sensor::init() -> update(), so no manual
+    // channel selection is needed before init().
+    if (!_sensorA) _sensorA = new MuxedMagneticSensorI2C(AS5600_I2C, _mux, pins.chanA);
+    if (!_sensorB) _sensorB = new MuxedMagneticSensorI2C(AS5600_I2C, _mux, pins.chanB);
     _sensorA->init(&Wire);
-    _sensorB->init(&Wire1);
-    Serial.printf("[TURRET] AS5600 sensors initialized\n");
+    _sensorB->init(&Wire);
+    Serial.printf("[TURRET] AS5600 sensors initialized via mux\n");
 
     _motorA.linkDriver(_driverA);
     _motorA.linkSensor(_sensorA);

@@ -25,7 +25,10 @@ inline constexpr TurretConfig DEFAULT_TURRET_CONFIG {
 inline constexpr TurretPins DEFAULT_TURRET_PINS {
     .pwmA_a = 25, .pwmA_b = 26, .pwmA_c = 27, .enA = 14,
     .pwmB_a = 17, .pwmB_b = 5,  .pwmB_c = 19, .enB = 23,
-    // AS5600 encoders on two separate I2C buses (change if your wiring differs)
-    .sdaA = 21, .sclA = 22,  // Motor A encoder -> I2C bus 0
-    .sdaB = 16, .sclB = 4,   // Motor B encoder -> I2C bus 1
+    // TCA9548A mux on standard ESP32 I2C pins (change if your wiring differs)
+    .sda     = 21,
+    .scl     = 22,
+    .muxAddr = 0x70,  // A0/A1/A2 all tied to GND
+    .chanA   = 0,     // Motor A AS5600 on mux channel 0
+    .chanB   = 1,     // Motor B AS5600 on mux channel 1
 };
