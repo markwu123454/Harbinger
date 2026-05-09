@@ -27,7 +27,7 @@ void BtTask::run() {
     }
     Serial.printf("[BT] SPP device \"%s\" ready, awaiting connection\n", BT_NAME);
 
-    bool         wasConnected = false;
+    bool          wasConnected = false;
     unsigned long lastTelemetry = 0;
 
     for (;;) {
@@ -75,8 +75,12 @@ void BtTask::run() {
 
         // ── Connection lifecycle ─────────────────────────────────
         if (connected && !wasConnected) {
-            Serial.println("[BT] Client connected — sending initial state");
+            Serial.println("[BT] Client connected — sending initial state + telemetry");
             sendState(snap.masterArm, snap.turretArm, snap.gunArm, snap.targetVoltage);
+            sendTelemetry(snap.currentHeading, snap.currentElevation,
+                          snap.motorA_vel, snap.motorA_acc,
+                          snap.motorB_vel, snap.motorB_acc);
+            lastTelemetry = millis();
         } else if (!connected && wasConnected) {
             Serial.println("[BT] Client disconnected");
         }
@@ -94,9 +98,9 @@ void BtTask::run() {
             sendState(snap.masterArm, snap.turretArm, snap.gunArm, snap.targetVoltage);
         }
 
-        // ── TX: telemetry (250 ms) ───────────────────────────────
+        // ── TX: telemetry (10 ms = 100 Hz, matched to control loop) ───────
         unsigned long now = millis();
-        if (now - lastTelemetry >= 250) {
+        if (now - lastTelemetry >= 10) {
             sendTelemetry(snap.currentHeading, snap.currentElevation,
                           snap.motorA_vel, snap.motorA_acc,
                           snap.motorB_vel, snap.motorB_acc);
@@ -163,7 +167,10 @@ void BtTask::sendTelemetry(float heading, float elevation,
 
 void BtTask::sendRaw(uint8_t type, const void* payload, size_t len) {
     if (!bt_.hasClient()) return;
-    bt_.write(&type, 1);
-    if (payload && len > 0)
-        bt_.write(static_cast<const uint8_t*>(payload), len);
+    // Single write keeps type+payload in one SPP frame, avoiding two round-trips
+    // through BluetoothSerial's TX queue — important at 100 Hz telemetry rate.
+    uint8_t buf[1 + 64];  // 64 bytes is larger than any current packet
+    buf[0] = type;
+    if (payload && len > 0) memcpy(buf + 1, payload, len);
+    bt_.write(buf, 1 + len);
 }
