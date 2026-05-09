@@ -12,7 +12,7 @@ void ControlTask::taskEntry(void* param) {
 
 void ControlTask::run() {
     turret_.begin(DEFAULT_TURRET_PINS, DEFAULT_TURRET_CONFIG);
-    turret_.setMode(TurretMode::POSITION);
+    turret_.setMode(TurretMode::CLOSED_LOOP_POSITION);
 
     for (;;) {
         const MotorSnapshot snap = motorRead();

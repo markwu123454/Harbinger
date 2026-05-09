@@ -2,10 +2,13 @@
 
 #include <Arduino.h>
 #include <SimpleFOC.h>
+#include "TCA9548A.h"
+#include "MuxedMagneticSensor.h"
 
 enum class TurretMode {
-    VELOCITY,   // joystick-style: heading/elevation rate commands
-    POSITION    // point-to-angle: heading/elevation angle commands
+    VELOCITY,              ///< open-loop velocity (joystick)
+    POSITION,              ///< open-loop angle
+    CLOSED_LOOP_POSITION   ///< closed-loop angle via AS5600 encoders
 };
 
 struct TurretPins {
@@ -20,6 +23,13 @@ struct TurretPins {
     int pwmB_b;
     int pwmB_c;
     int enB;
+
+    // TCA9548A I2C multiplexer (both AS5600s share address 0x36 via mux)
+    int     sda;      ///< I2C SDA
+    int     scl;      ///< I2C SCL
+    uint8_t muxAddr;  ///< TCA9548A address – A0/A1/A2 all GND = 0x70
+    uint8_t chanA;    ///< Mux channel wired to Motor A AS5600
+    uint8_t chanB;    ///< Mux channel wired to Motor B AS5600
 };
 
 struct TurretConfig {
@@ -30,28 +40,36 @@ struct TurretConfig {
     float phase_resistance;
     float gear_ratio_heading;
     float gear_ratio_elevation;
+    // Closed-loop PID gains (tune for your system)
+    float angle_P;           ///< position loop P gain
+    float velocity_P;        ///< velocity loop P gain
+    float velocity_I;        ///< velocity loop I gain
+    float velocity_D;        ///< velocity loop D gain
+    float velocity_ramp;     ///< velocity command ramp [rad/s^2]
+    float velocity_lpf;      ///< velocity measurement LPF time constant [s]
 };
 
 class DifferentialTurret {
 public:
     DifferentialTurret();
 
-    /// Call once in setup(). Initializes both motors and drivers.
+    /// Call once in setup(). Initializes motors, drivers, mux, and AS5600 encoders.
     void begin(const TurretPins& pins, const TurretConfig& config);
 
     /// Call every loop iteration. Runs FOC and motion control for both motors.
     void update();
 
-    /// Set turret mode (velocity or position control)
+    /// Set turret mode
     void setMode(TurretMode mode);
     [[nodiscard]] TurretMode getMode() const;
 
     /// Set target in current mode:
-    ///   VELOCITY mode: heading_rate [rad/s], elevation_rate [rad/s] at the OUTPUT
-    ///   POSITION mode: heading_angle [rad], elevation_angle [rad] at the OUTPUT
+    ///   VELOCITY:             heading/elevation rate [rad/s] at output
+    ///   POSITION:             heading/elevation angle [rad] at output (open-loop)
+    ///   CLOSED_LOOP_POSITION: heading/elevation angle [rad] at output (encoder-corrected)
     void setTarget(float heading, float elevation);
 
-    /// Read current output angles (estimated from open-loop integration)
+    /// Read current output angles (sensor-based in closed-loop, estimated otherwise)
     [[nodiscard]] float getHeading() const;
     [[nodiscard]] float getElevation() const;
 
@@ -67,20 +85,20 @@ public:
     BLDCMotor& motorB();
 
 private:
-    /// Convert heading/elevation targets to individual motor targets
-    /// Differential mixing:
-    ///   motorA = heading + elevation
-    ///   motorB = heading - elevation
     void mixAndApply();
+    void applyPIDConfig();
 
-    BLDCMotor       _motorA;
-    BLDCMotor       _motorB;
-    BLDCDriver3PWM* _driverA = nullptr;
-    BLDCDriver3PWM* _driverB = nullptr;
+    BLDCMotor               _motorA;
+    BLDCMotor               _motorB;
+    BLDCDriver3PWM*         _driverA  = nullptr;
+    BLDCDriver3PWM*         _driverB  = nullptr;
+    TCA9548A                _mux;
+    MuxedMagneticSensorI2C* _sensorA  = nullptr;
+    MuxedMagneticSensorI2C* _sensorB  = nullptr;
 
-    TurretMode  _mode = TurretMode::VELOCITY;
-    bool        _enabled = true;
-    TurretConfig _config;
+    TurretMode   _mode    = TurretMode::VELOCITY;
+    bool         _enabled = true;
+    TurretConfig _config  = {};
 
     float _heading_target   = 0.0f;
     float _elevation_target = 0.0f;
