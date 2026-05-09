@@ -1,11 +1,35 @@
 #include "SharedData.h"
+#include <stdio.h>
 
-SharedData       shared;
-SemaphoreHandle_t dataMutex = nullptr;
+SharedData        shared;
+SemaphoreHandle_t dataMutex  = nullptr;
+QueueHandle_t     logQueue   = nullptr;
 
 void sharedInit() {
     dataMutex = xSemaphoreCreateMutex();
+    logQueue  = xQueueCreate(LOG_QUEUE_DEPTH, sizeof(LogEntry));
 }
+
+// ── Log queue ─────────────────────────────────────────────────────
+
+void logWrite(uint8_t level, const char* fmt, ...) {
+    if (!logQueue) return;
+    LogEntry e{};
+    e.level = level;
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(e.msg, sizeof(e.msg), fmt, args);
+    va_end(args);
+    // Non-blocking: drop the message if the queue is full rather than stalling a task
+    xQueueSendToBack(logQueue, &e, 0);
+}
+
+bool logRead(LogEntry& out) {
+    if (!logQueue) return false;
+    return xQueueReceive(logQueue, &out, 0) == pdTRUE;
+}
+
+// ── Motor ↔ Shared ──────────────────────────────────────────────
 
 MotorSnapshot motorRead() {
     MotorSnapshot s{};
@@ -33,6 +57,8 @@ void motorWrite(float heading, float elevation,
     shared.fireRequested    = false;
     xSemaphoreGive(dataMutex);
 }
+
+// ── Wifi ↔ Shared ───────────────────────────────────────────────
 
 WifiSnapshot wifiRead() {
     WifiSnapshot s{};

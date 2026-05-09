@@ -1,8 +1,10 @@
 #pragma once
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
+#include <freertos/queue.h>
+#include <stdarg.h>
 
-// ── Shared state struct ───────────────────────────────────
+// ── Shared state struct ────────────────────────────────────────
 struct SharedData {
     // wifi → motor
     float targetHeading   = 0;
@@ -24,7 +26,7 @@ struct SharedData {
     bool stateChanged = false;
 };
 
-// ── Snapshot types ────────────────────────────────────────
+// ── Snapshot types ───────────────────────────────────────────
 struct MotorSnapshot {
     float targetHeading, targetElevation;
     bool  turretArm, masterArm;
@@ -40,11 +42,27 @@ struct WifiSnapshot {
     bool  stateChanged;
 };
 
-// ── Extern declarations ───────────────────────────────────
-extern SharedData     shared;
+// ── Log queue ────────────────────────────────────────────────
+constexpr int LOG_QUEUE_DEPTH = 16;
+constexpr int LOG_MSG_MAX     = 120;
+
+struct LogEntry {
+    uint8_t level;
+    char    msg[LOG_MSG_MAX + 1];
+};
+
+extern QueueHandle_t logQueue;
+
+// printf-style; drops silently if queue is full (non-blocking)
+void logWrite(uint8_t level, const char* fmt, ...)
+    __attribute__((format(printf, 2, 3)));
+bool logRead(LogEntry& out);  // returns false if queue empty
+
+// ── Extern declarations ─────────────────────────────────────────
+extern SharedData        shared;
 extern SemaphoreHandle_t dataMutex;
 
-// ── Accessor functions ────────────────────────────────────
+// ── Accessor functions ─────────────────────────────────────────
 void          sharedInit();   // call once before tasks start
 
 MotorSnapshot motorRead();

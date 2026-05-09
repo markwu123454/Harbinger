@@ -3,6 +3,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "proto.h"
+#include "SharedData.h"
 
 class BtTask {
 public:
@@ -16,7 +17,10 @@ private:
     void sendState(bool masterArm, bool turretArm, bool gunArm, float targetV);
     void sendTelemetry(float heading, float elevation,
                        float aVel, float aAcc, float bVel, float bAcc);
+    void sendLog(uint8_t level, const char* msg);
     void sendRaw(uint8_t type, const void* payload, size_t len);
+
+    void flushLogQueue();  // drain all pending log entries and transmit
 
     BluetoothSerial bt_;
     TaskHandle_t    handle_ = nullptr;
