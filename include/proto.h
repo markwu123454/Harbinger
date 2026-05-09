@@ -2,7 +2,7 @@
 #include <stdint.h>
 #include <stddef.h>
 
-// ── Message type IDs ──────────────────────────────────────────
+// ── Message type IDs ───────────────────────────────────────────
 // Host → Device
 constexpr uint8_t MSG_PING        = 0x01;  // no payload
 constexpr uint8_t MSG_AIM         = 0x02;  // float heading, float elevation
@@ -15,9 +15,10 @@ constexpr uint8_t MSG_PONG        = 0x81;  // no payload
 constexpr uint8_t MSG_STATE       = 0x82;  // uint8_t flags, float target_v
 constexpr uint8_t MSG_TELEMETRY   = 0x83;  // 6× float
 constexpr uint8_t MSG_SHOT        = 0x84;  // uint32_t total, uint8_t count, [uint32_t t_us, float v, float drain]×count
+constexpr uint8_t MSG_LOG         = 0x85;  // uint8_t level, uint8_t slen, char msg[slen]
 
-// ── Fixed payload sizes (bytes, excluding type byte) ──────────
-constexpr size_t PSIZ_PING        = 0;
+// ── Fixed payload sizes (bytes, excluding type byte) ─────────────
+ constexpr size_t PSIZ_PING        = 0;
 constexpr size_t PSIZ_AIM         = 8;   // 2× float32
 constexpr size_t PSIZ_ARM         = 1;   // uint8_t flags
 constexpr size_t PSIZ_SET_VOLTAGE = 4;   // float32
@@ -27,8 +28,14 @@ constexpr size_t PSIZ_STATE       = 5;   // uint8_t + float32
 constexpr size_t PSIZ_TELEMETRY   = 24;  // 6× float32
 constexpr size_t PSIZ_SHOT_BASE   = 5;   // uint32_t + uint8_t (header before stage data)
 constexpr size_t PSIZ_SHOT_STAGE  = 12;  // uint32_t + float32 + float32
+constexpr size_t PSIZ_LOG_HEADER  = 2;   // uint8_t level + uint8_t slen; slen more bytes follow
 
-// ── ARM flags ─────────────────────────────────────────────────
+// ── Log levels ───────────────────────────────────────────────
+constexpr uint8_t LOG_INFO  = 0;
+constexpr uint8_t LOG_WARN  = 1;
+constexpr uint8_t LOG_ERROR = 2;
+
+// ── ARM flags ───────────────────────────────────────────────
 // 2 bits per field in uint8_t: 0b00=no-change, 0b01=false, 0b10=true
 constexpr uint8_t ARM_SHIFT_MASTER = 0;
 constexpr uint8_t ARM_SHIFT_TURRET = 2;
@@ -50,7 +57,7 @@ constexpr uint8_t STATE_MASTER_ARM = 0x01;
 constexpr uint8_t STATE_TURRET_ARM = 0x02;
 constexpr uint8_t STATE_GUN_ARM    = 0x04;
 
-// ── Packed message structs ────────────────────────────────────
+// ── Packed message structs ──────────────────────────────────────
 #pragma pack(push, 1)
 
 struct PktAim {

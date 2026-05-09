@@ -1,4 +1,5 @@
 #include "DifferentialTurret.h"
+#include "SharedData.h"
 #include <Wire.h>
 
 DifferentialTurret::DifferentialTurret()
@@ -53,18 +54,28 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
     _sensorB->init(&Wire);
     Serial.printf("[TURRET] AS5600 sensors initialized via mux\n");
 
+    // Log initial raw sensor angles — if these are always exactly 0.0 the
+    // AS5600 is not responding (I2C fault, wrong mux channel, missing magnet).
+    float rawA = _sensorA->getSensorAngle();
+    float rawB = _sensorB->getSensorAngle();
+    logWrite(rawA == 0.0f ? LOG_WARN : LOG_INFO,
+             "SensorA raw angle after init: %.4f rad (%.1f deg)", rawA, rawA * 57.2958f);
+    logWrite(rawB == 0.0f ? LOG_WARN : LOG_INFO,
+             "SensorB raw angle after init: %.4f rad (%.1f deg)", rawB, rawB * 57.2958f);
+
     _motorA.linkDriver(_driverA);
     _motorA.linkSensor(_sensorA);
     _motorA.voltage_limit  = config.voltage_limit;
     _motorA.velocity_limit = config.velocity_limit;
     _motorA.controller     = velocity_openloop;
     _motorA.init();
-    _motorA.initFOC();
+    bool okA = _motorA.initFOC();
     // Keep motor.enabled=true so loopFOC() always runs for sensor tracking.
     // disable()/enable() gate only the driver hardware, not the motor object.
     _motorA.enable();
-    Serial.printf("[TURRET] Motor A init+FOC complete - vlim=%.2f, vel_lim=%.2f\n",
-                  config.voltage_limit, config.velocity_limit);
+    logWrite(okA ? LOG_INFO : LOG_ERROR,
+             "MotorA initFOC: %s  shaft_angle=%.4f rad (%.1f deg)",
+             okA ? "OK" : "FAILED", _motorA.shaft_angle, _motorA.shaft_angle * 57.2958f);
 
     _motorB.linkDriver(_driverB);
     _motorB.linkSensor(_sensorB);
@@ -72,11 +83,12 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
     _motorB.velocity_limit = config.velocity_limit;
     _motorB.controller     = velocity_openloop;
     _motorB.init();
-    _motorB.initFOC();
+    bool okB = _motorB.initFOC();
     // Same reasoning as motorA above.
     _motorB.enable();
-    Serial.printf("[TURRET] Motor B init+FOC complete - vlim=%.2f, vel_lim=%.2f\n",
-                  config.voltage_limit, config.velocity_limit);
+    logWrite(okB ? LOG_INFO : LOG_ERROR,
+             "MotorB initFOC: %s  shaft_angle=%.4f rad (%.1f deg)",
+             okB ? "OK" : "FAILED", _motorB.shaft_angle, _motorB.shaft_angle * 57.2958f);
 
     Serial.printf("[TURRET] begin() complete\n");
 }
