@@ -60,6 +60,9 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
     _motorA.controller     = velocity_openloop;
     _motorA.init();
     _motorA.initFOC();
+    // Keep motor.enabled=true so loopFOC() always runs for sensor tracking.
+    // disable()/enable() gate only the driver hardware, not the motor object.
+    _motorA.enable();
     Serial.printf("[TURRET] Motor A init+FOC complete - vlim=%.2f, vel_lim=%.2f\n",
                   config.voltage_limit, config.velocity_limit);
 
@@ -70,6 +73,8 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
     _motorB.controller     = velocity_openloop;
     _motorB.init();
     _motorB.initFOC();
+    // Same reasoning as motorA above.
+    _motorB.enable();
     Serial.printf("[TURRET] Motor B init+FOC complete - vlim=%.2f, vel_lim=%.2f\n",
                   config.voltage_limit, config.velocity_limit);
 

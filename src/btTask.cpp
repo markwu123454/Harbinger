@@ -75,8 +75,12 @@ void BtTask::run() {
 
         // ── Connection lifecycle ─────────────────────────────────
         if (connected && !wasConnected) {
-            Serial.println("[BT] Client connected — sending initial state");
+            Serial.println("[BT] Client connected — sending initial state + telemetry");
             sendState(snap.masterArm, snap.turretArm, snap.gunArm, snap.targetVoltage);
+            sendTelemetry(snap.currentHeading, snap.currentElevation,
+                          snap.motorA_vel, snap.motorA_acc,
+                          snap.motorB_vel, snap.motorB_acc);
+            lastTelemetry = millis();
         } else if (!connected && wasConnected) {
             Serial.println("[BT] Client disconnected");
         }
@@ -94,9 +98,9 @@ void BtTask::run() {
             sendState(snap.masterArm, snap.turretArm, snap.gunArm, snap.targetVoltage);
         }
 
-        // ── TX: telemetry (250 ms) ───────────────────────────────
+        // ── TX: telemetry (50 ms) ────────────────────────────────
         unsigned long now = millis();
-        if (now - lastTelemetry >= 250) {
+        if (now - lastTelemetry >= 50) {
             sendTelemetry(snap.currentHeading, snap.currentElevation,
                           snap.motorA_vel, snap.motorA_acc,
                           snap.motorB_vel, snap.motorB_acc);
