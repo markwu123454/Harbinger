@@ -70,6 +70,10 @@ public:
     ///   CLOSED_LOOP_POSITION: heading/elevation angle [rad] at output (encoder-corrected)
     void setTarget(float heading, float elevation);
 
+    /// Per-motor acceleration (rad/s²), computed as d(shaft_velocity)/dt each update().
+    [[nodiscard]] float getMotorAAcceleration() const { return _motorA_acc; }
+    [[nodiscard]] float getMotorBAcceleration() const { return _motorB_acc; }
+
     /// Read current output angles (sensor-based in closed-loop, estimated otherwise)
     [[nodiscard]] float getHeading() const;
     [[nodiscard]] float getElevation() const;
@@ -103,4 +107,10 @@ private:
 
     float _heading_target   = 0.0f;
     float _elevation_target = 0.0f;
+
+    float         _motorA_acc        = 0.0f;
+    float         _motorB_acc        = 0.0f;
+    float         _prevMotorA_vel    = 0.0f;
+    float         _prevMotorB_vel    = 0.0f;
+    unsigned long _lastUpdateUs      = 0;
 };

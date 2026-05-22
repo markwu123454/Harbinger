@@ -172,6 +172,18 @@ void DifferentialTurret::update() {
 
     _motorA.move();
     _motorB.move();
+
+    unsigned long now = micros();
+    if (_lastUpdateUs != 0) {
+        float dt = (now - _lastUpdateUs) * 1e-6f;
+        if (dt > 0.0f) {
+            _motorA_acc = (_motorA.shaft_velocity - _prevMotorA_vel) / dt;
+            _motorB_acc = (_motorB.shaft_velocity - _prevMotorB_vel) / dt;
+        }
+    }
+    _prevMotorA_vel = _motorA.shaft_velocity;
+    _prevMotorB_vel = _motorB.shaft_velocity;
+    _lastUpdateUs   = now;
 }
 
 void DifferentialTurret::setMode(const TurretMode mode) {
