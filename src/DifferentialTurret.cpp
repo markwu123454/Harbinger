@@ -86,6 +86,12 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
     int motOkA = _motorA.init();
     logWrite(motOkA ? LOG_INFO : LOG_ERROR, "MotorA init %s", motOkA ? "OK" : "FAILED");
 
+    // Enable the driver before initFOC so the motor phases are powered during
+    // the alignment sequence. BLDCDriver3PWM::init() leaves the enable pin LOW
+    // (driver off); if initFOC runs with the driver disabled no current flows,
+    // the rotor can't move, alignSensor() detects zero movement and returns 0.
+    _motorA.enable();
+
     // Read the sensor through the motor's own linked sensor path (goes through
     // update() → correct mux channel) to confirm sensor data reaches the motor.
     _sensorA->update();
@@ -94,9 +100,6 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
              sensorAngleA, sensorAngleA * 57.2958f);
 
     bool okA = _motorA.initFOC();
-    // Keep motor.enabled=true so loopFOC() always runs for sensor tracking.
-    // disable()/enable() gate only the driver hardware, not the motor object.
-    _motorA.enable();
     logWrite(okA ? LOG_INFO : LOG_ERROR,
              "MotorA initFOC: %s  zero_elec_angle=%.4f rad  shaft_angle=%.4f rad (%.1f deg)",
              okA ? "OK" : "FAILED",
@@ -113,14 +116,14 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
     int motOkB = _motorB.init();
     logWrite(motOkB ? LOG_INFO : LOG_ERROR, "MotorB init %s", motOkB ? "OK" : "FAILED");
 
+    _motorB.enable();
+
     _sensorB->update();
     float sensorAngleB = _sensorB->getAngle();
     logWrite(LOG_INFO, "MotorB pre-initFOC sensor angle (via update()): %.4f rad (%.1f deg)",
              sensorAngleB, sensorAngleB * 57.2958f);
 
     bool okB = _motorB.initFOC();
-    // Same reasoning as motorA above.
-    _motorB.enable();
     logWrite(okB ? LOG_INFO : LOG_ERROR,
              "MotorB initFOC: %s  zero_elec_angle=%.4f rad  shaft_angle=%.4f rad (%.1f deg)",
              okB ? "OK" : "FAILED",
