@@ -70,7 +70,7 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
     _motorA.voltage_limit         = config.voltage_limit;
     _motorA.velocity_limit        = config.velocity_limit;
     _motorA.voltage_sensor_align  = config.sensor_align_voltage;
-    _motorA.controller            = velocity_openloop;
+    _motorA.controller            = angle;
     _motorA.init();
     bool okA = _motorA.initFOC();
     // Keep motor.enabled=true so loopFOC() always runs for sensor tracking.
@@ -85,7 +85,7 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
     _motorB.voltage_limit         = config.voltage_limit;
     _motorB.velocity_limit        = config.velocity_limit;
     _motorB.voltage_sensor_align  = config.sensor_align_voltage;
-    _motorB.controller            = velocity_openloop;
+    _motorB.controller            = angle;
     _motorB.init();
     bool okB = _motorB.initFOC();
     // Same reasoning as motorA above.
