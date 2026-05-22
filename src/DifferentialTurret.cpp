@@ -35,12 +35,18 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
     _driverA->voltage_power_supply = config.voltage_power_supply;
     _driverA->voltage_limit = config.voltage_power_supply;
     int drvOkA = _driverA->init();
-    Serial.printf("[TURRET] Driver A init %s - vps=%.2f\n", drvOkA ? "OK" : "FAILED", config.voltage_power_supply);
+    logWrite(drvOkA ? LOG_INFO : LOG_ERROR,
+             "DriverA init %s (pwm=%d,%d,%d en=%d)",
+             drvOkA ? "OK" : "FAILED",
+             pins.pwmA_a, pins.pwmA_b, pins.pwmA_c, pins.enA);
 
     _driverB->voltage_power_supply = config.voltage_power_supply;
     _driverB->voltage_limit = config.voltage_power_supply;
     int drvOkB = _driverB->init();
-    Serial.printf("[TURRET] Driver B init %s - vps=%.2f\n", drvOkB ? "OK" : "FAILED", config.voltage_power_supply);
+    logWrite(drvOkB ? LOG_INFO : LOG_ERROR,
+             "DriverB init %s (pwm=%d,%d,%d en=%d)",
+             drvOkB ? "OK" : "FAILED",
+             pins.pwmB_a, pins.pwmB_b, pins.pwmB_c, pins.enB);
 
     // Init TCA9548A mux on a single I2C bus; both AS5600s share address 0x36
     Wire.begin(pins.sda, pins.scl);
@@ -78,7 +84,7 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
     _motorA.voltage_sensor_align  = config.sensor_align_voltage;
     _motorA.controller            = angle;
     int motOkA = _motorA.init();
-    Serial.printf("[TURRET] MotorA init %s\n", motOkA ? "OK" : "FAILED");
+    logWrite(motOkA ? LOG_INFO : LOG_ERROR, "MotorA init %s", motOkA ? "OK" : "FAILED");
 
     // Read the sensor through the motor's own linked sensor path (goes through
     // update() → correct mux channel) to confirm sensor data reaches the motor.
@@ -105,7 +111,7 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
     _motorB.voltage_sensor_align  = config.sensor_align_voltage;
     _motorB.controller            = angle;
     int motOkB = _motorB.init();
-    Serial.printf("[TURRET] MotorB init %s\n", motOkB ? "OK" : "FAILED");
+    logWrite(motOkB ? LOG_INFO : LOG_ERROR, "MotorB init %s", motOkB ? "OK" : "FAILED");
 
     _sensorB->update();
     float sensorAngleB = _sensorB->getAngle();
