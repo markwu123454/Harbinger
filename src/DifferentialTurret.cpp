@@ -99,7 +99,13 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
     logWrite(LOG_INFO, "MotorA pre-initFOC sensor angle (via update()): %.4f rad (%.1f deg)",
              sensorAngleA, sensorAngleA * 57.2958f);
 
+    // alignSensor() calls setPhaseVoltage(voltage_sensor_align, ...) but
+    // setPhaseVoltage() clamps Uq to voltage_limit, making sensor_align_voltage
+    // ineffective when voltage_limit < sensor_align_voltage.  Raise the limit
+    // for the duration of initFOC then restore it.
+    _motorA.voltage_limit = config.sensor_align_voltage;
     bool okA = _motorA.initFOC();
+    _motorA.voltage_limit = config.voltage_limit;
     logWrite(okA ? LOG_INFO : LOG_ERROR,
              "MotorA initFOC: %s  zero_elec_angle=%.4f rad  shaft_angle=%.4f rad (%.1f deg)",
              okA ? "OK" : "FAILED",
@@ -129,7 +135,9 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
     logWrite(LOG_INFO, "MotorB pre-initFOC sensor angle (via update()): %.4f rad (%.1f deg)",
              sensorAngleB, sensorAngleB * 57.2958f);
 
+    _motorB.voltage_limit = config.sensor_align_voltage;
     bool okB = _motorB.initFOC();
+    _motorB.voltage_limit = config.voltage_limit;
     logWrite(okB ? LOG_INFO : LOG_ERROR,
              "MotorB initFOC: %s  zero_elec_angle=%.4f rad  shaft_angle=%.4f rad (%.1f deg)",
              okB ? "OK" : "FAILED",
