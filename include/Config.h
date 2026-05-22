@@ -20,6 +20,7 @@ inline constexpr TurretConfig DEFAULT_TURRET_CONFIG {
     .velocity_D    =  0.0f,
     .velocity_ramp = 1000.0f,
     .velocity_lpf  = 0.01f,
+    .sensor_align_voltage = 6.0f,
 };
 
 inline constexpr TurretPins DEFAULT_TURRET_PINS {

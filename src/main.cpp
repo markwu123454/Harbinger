@@ -7,7 +7,7 @@ static ControlTask controlTask;
 
 void setup() {
     Serial.begin(115200);
-    dataMutex = xSemaphoreCreateMutex();
+    sharedInit();
     controlTask.start(1, 2);
     btTask.start(0, 1);
 }

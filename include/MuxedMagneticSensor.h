@@ -4,10 +4,21 @@
 
 // MagneticSensorI2C that selects the correct TCA9548A channel before every
 // I2C read, allowing multiple AS5600s (fixed addr 0x36) on one bus.
+//
+// Both update() and getSensorAngle() are overridden: SimpleFOC's internal
+// update() path goes through MagneticSensorI2C::update() which calls the raw
+// I2C read directly (not via getSensorAngle()), so overriding only
+// getSensorAngle() leaves the mux un-selected during motor.init() and
+// initFOC(), causing both to read the wrong sensor.
 class MuxedMagneticSensorI2C : public MagneticSensorI2C {
 public:
     MuxedMagneticSensorI2C(MagneticSensorI2CConfig_s config, TCA9548A& mux, uint8_t channel)
         : MagneticSensorI2C(config), _mux(mux), _channel(channel) {}
+
+    void update() override {
+        _mux.selectChannel(_channel);
+        MagneticSensorI2C::update();
+    }
 
     float getSensorAngle() override {
         _mux.selectChannel(_channel);
