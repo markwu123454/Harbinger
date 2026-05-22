@@ -53,6 +53,8 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
     _sensorA->init(&Wire);
     _sensorB->init(&Wire);
     Serial.printf("[TURRET] AS5600 sensors initialized via mux\n");
+    Serial.printf("[TURRET] initFOC alignment voltage: %.2f V (runtime limit: %.2f V)\n",
+                  config.sensor_align_voltage, config.voltage_limit);
 
     // Log initial raw sensor angles — if these are always exactly 0.0 the
     // AS5600 is not responding (I2C fault, wrong mux channel, missing magnet).
@@ -65,9 +67,10 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
 
     _motorA.linkDriver(_driverA);
     _motorA.linkSensor(_sensorA);
-    _motorA.voltage_limit  = config.voltage_limit;
-    _motorA.velocity_limit = config.velocity_limit;
-    _motorA.controller     = velocity_openloop;
+    _motorA.voltage_limit         = config.voltage_limit;
+    _motorA.velocity_limit        = config.velocity_limit;
+    _motorA.voltage_sensor_align  = config.sensor_align_voltage;
+    _motorA.controller            = velocity_openloop;
     _motorA.init();
     bool okA = _motorA.initFOC();
     // Keep motor.enabled=true so loopFOC() always runs for sensor tracking.
@@ -79,9 +82,10 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
 
     _motorB.linkDriver(_driverB);
     _motorB.linkSensor(_sensorB);
-    _motorB.voltage_limit  = config.voltage_limit;
-    _motorB.velocity_limit = config.velocity_limit;
-    _motorB.controller     = velocity_openloop;
+    _motorB.voltage_limit         = config.voltage_limit;
+    _motorB.velocity_limit        = config.velocity_limit;
+    _motorB.voltage_sensor_align  = config.sensor_align_voltage;
+    _motorB.controller            = velocity_openloop;
     _motorB.init();
     bool okB = _motorB.initFOC();
     // Same reasoning as motorA above.

@@ -47,6 +47,7 @@ struct TurretConfig {
     float velocity_D;        ///< velocity loop D gain
     float velocity_ramp;     ///< velocity command ramp [rad/s^2]
     float velocity_lpf;      ///< velocity measurement LPF time constant [s]
+    float sensor_align_voltage; ///< voltage used during initFOC() alignment (must be high enough to physically rotate the motor)
 };
 
 class DifferentialTurret {
