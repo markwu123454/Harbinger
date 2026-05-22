@@ -10,6 +10,10 @@ DifferentialTurret::DifferentialTurret()
 }
 
 void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& config) {
+    // Route SimpleFOC's own diagnostic prints to Serial so they appear in
+    // the serial monitor alongside our own messages.
+    SimpleFOCDebug::enable(&Serial);
+
     Serial.printf(
         "[TURRET] begin() called - poles=%d, resistance=%.2f, vps=%.2f, vlim=%.2f, vel_lim=%.2f, gr_hdg=%.3f, gr_elv=%.3f\n",
         config.pole_pairs, config.phase_resistance,
@@ -30,13 +34,13 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
 
     _driverA->voltage_power_supply = config.voltage_power_supply;
     _driverA->voltage_limit = config.voltage_power_supply;
-    _driverA->init();
-    Serial.printf("[TURRET] Driver A init complete - vps=%.2f\n", config.voltage_power_supply);
+    int drvOkA = _driverA->init();
+    Serial.printf("[TURRET] Driver A init %s - vps=%.2f\n", drvOkA ? "OK" : "FAILED", config.voltage_power_supply);
 
     _driverB->voltage_power_supply = config.voltage_power_supply;
     _driverB->voltage_limit = config.voltage_power_supply;
-    _driverB->init();
-    Serial.printf("[TURRET] Driver B init complete - vps=%.2f\n", config.voltage_power_supply);
+    int drvOkB = _driverB->init();
+    Serial.printf("[TURRET] Driver B init %s - vps=%.2f\n", drvOkB ? "OK" : "FAILED", config.voltage_power_supply);
 
     // Init TCA9548A mux on a single I2C bus; both AS5600s share address 0x36
     Wire.begin(pins.sda, pins.scl);
@@ -45,9 +49,9 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
     Serial.printf("[TURRET] TCA9548A mux init - addr=0x%02X, SDA=%d, SCL=%d, chanA=%d, chanB=%d\n",
                   pins.muxAddr, pins.sda, pins.scl, pins.chanA, pins.chanB);
 
-    // MuxedMagneticSensorI2C selects its channel inside getSensorAngle(),
-    // which is called by init() -> Sensor::init() -> update(), so no manual
-    // channel selection is needed before init().
+    // MuxedMagneticSensorI2C selects its channel in both update() and
+    // getSensorAngle() so the correct mux channel is always active regardless
+    // of which code path SimpleFOC uses internally.
     if (!_sensorA) _sensorA = new MuxedMagneticSensorI2C(AS5600_I2C, _mux, pins.chanA);
     if (!_sensorB) _sensorB = new MuxedMagneticSensorI2C(AS5600_I2C, _mux, pins.chanB);
     _sensorA->init(&Wire);
@@ -56,8 +60,9 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
     Serial.printf("[TURRET] initFOC alignment voltage: %.2f V (runtime limit: %.2f V)\n",
                   config.sensor_align_voltage, config.voltage_limit);
 
-    // Log initial raw sensor angles — if these are always exactly 0.0 the
-    // AS5600 is not responding (I2C fault, wrong mux channel, missing magnet).
+    // Log raw sensor angles via direct getSensorAngle() call.
+    // If these are 0.0 the AS5600 is not responding (I2C fault, wrong mux
+    // channel, or missing/too-distant magnet).
     float rawA = _sensorA->getSensorAngle();
     float rawB = _sensorB->getSensorAngle();
     logWrite(rawA == 0.0f ? LOG_WARN : LOG_INFO,
@@ -65,34 +70,56 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
     logWrite(rawB == 0.0f ? LOG_WARN : LOG_INFO,
              "SensorB raw angle after init: %.4f rad (%.1f deg)", rawB, rawB * 57.2958f);
 
+    // ── Motor A ───────────────────────────────────────────────────────────
     _motorA.linkDriver(_driverA);
     _motorA.linkSensor(_sensorA);
     _motorA.voltage_limit         = config.voltage_limit;
     _motorA.velocity_limit        = config.velocity_limit;
     _motorA.voltage_sensor_align  = config.sensor_align_voltage;
     _motorA.controller            = angle;
-    _motorA.init();
+    int motOkA = _motorA.init();
+    Serial.printf("[TURRET] MotorA init %s\n", motOkA ? "OK" : "FAILED");
+
+    // Read the sensor through the motor's own linked sensor path (goes through
+    // update() → correct mux channel) to confirm sensor data reaches the motor.
+    _sensorA->update();
+    float sensorAngleA = _sensorA->getAngle();
+    logWrite(LOG_INFO, "MotorA pre-initFOC sensor angle (via update()): %.4f rad (%.1f deg)",
+             sensorAngleA, sensorAngleA * 57.2958f);
+
     bool okA = _motorA.initFOC();
     // Keep motor.enabled=true so loopFOC() always runs for sensor tracking.
     // disable()/enable() gate only the driver hardware, not the motor object.
     _motorA.enable();
     logWrite(okA ? LOG_INFO : LOG_ERROR,
-             "MotorA initFOC: %s  shaft_angle=%.4f rad (%.1f deg)",
-             okA ? "OK" : "FAILED", _motorA.shaft_angle, _motorA.shaft_angle * 57.2958f);
+             "MotorA initFOC: %s  zero_elec_angle=%.4f rad  shaft_angle=%.4f rad (%.1f deg)",
+             okA ? "OK" : "FAILED",
+             _motorA.zero_electric_angle,
+             _motorA.shaft_angle, _motorA.shaft_angle * 57.2958f);
 
+    // ── Motor B ───────────────────────────────────────────────────────────
     _motorB.linkDriver(_driverB);
     _motorB.linkSensor(_sensorB);
     _motorB.voltage_limit         = config.voltage_limit;
     _motorB.velocity_limit        = config.velocity_limit;
     _motorB.voltage_sensor_align  = config.sensor_align_voltage;
     _motorB.controller            = angle;
-    _motorB.init();
+    int motOkB = _motorB.init();
+    Serial.printf("[TURRET] MotorB init %s\n", motOkB ? "OK" : "FAILED");
+
+    _sensorB->update();
+    float sensorAngleB = _sensorB->getAngle();
+    logWrite(LOG_INFO, "MotorB pre-initFOC sensor angle (via update()): %.4f rad (%.1f deg)",
+             sensorAngleB, sensorAngleB * 57.2958f);
+
     bool okB = _motorB.initFOC();
     // Same reasoning as motorA above.
     _motorB.enable();
     logWrite(okB ? LOG_INFO : LOG_ERROR,
-             "MotorB initFOC: %s  shaft_angle=%.4f rad (%.1f deg)",
-             okB ? "OK" : "FAILED", _motorB.shaft_angle, _motorB.shaft_angle * 57.2958f);
+             "MotorB initFOC: %s  zero_elec_angle=%.4f rad  shaft_angle=%.4f rad (%.1f deg)",
+             okB ? "OK" : "FAILED",
+             _motorB.zero_electric_angle,
+             _motorB.shaft_angle, _motorB.shaft_angle * 57.2958f);
 
     Serial.printf("[TURRET] begin() complete\n");
 }
