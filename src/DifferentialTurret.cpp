@@ -20,12 +20,12 @@ bool DifferentialTurret::initOneMotor(
     float storedZea, int8_t storedDir, bool useStored,
     float alignVoltage, float voltageLimit, uint8_t enPin, char label)
 {
-    // ── Link and configure ─────────────────────────────────────────────────────
     logWrite(LOG_INFO,
-             "Motor%c init start: alignV=%.2f voltL=%.2f velL=%.2f enPin=%d "
-             "driver_vps=%.1f driver_vlim=%.1f",
-             label, alignVoltage, voltageLimit, _config.velocity_limit,
-             enPin, driver->voltage_power_supply, driver->voltage_limit);
+             "Motor%c init: alignV=%.1fV voltL=%.1fV enPin=%d "
+             "driver_vps=%.1fV driver_vlim=%.1fV GPIO%d=%s",
+             label, alignVoltage, voltageLimit, enPin,
+             driver->voltage_power_supply, driver->voltage_limit,
+             enPin, digitalRead(enPin) ? "HI" : "LO");
 
     motor.linkDriver(driver);
     motor.linkSensor(sensor);
@@ -35,173 +35,97 @@ bool DifferentialTurret::initOneMotor(
     motor.controller           = angle;
 
     int ok = motor.init();
-    logWrite(ok ? LOG_INFO : LOG_ERROR,
-             "Motor%c motor.init(): %s  enable_active_high=%d  GPIO%d=%s  motor.enabled=%d",
-             label, ok ? "OK" : "FAILED",
-             (int)driver->enable_active_high, enPin,
-             digitalRead(enPin) ? "HI" : "LO",
-             (int)motor.enabled);
-
     motor.enable();
-    logWrite(LOG_INFO,
-             "Motor%c after motor.enable(): GPIO%d=%s  enable_active_high=%d  motor.enabled=%d",
-             label, enPin, digitalRead(enPin) ? "HI" : "LO",
+    logWrite(ok ? LOG_INFO : LOG_ERROR,
+             "Motor%c motor.init()=%s  after enable(): GPIO%d=%s  enable_active_high=%d  motor.enabled=%d",
+             label, ok ? "OK" : "FAIL",
+             enPin, digitalRead(enPin) ? "HI" : "LO",
              (int)driver->enable_active_high, (int)motor.enabled);
 
-    // ── Self-test: verify the gate driver is sourcing current ──────────────────
-    // NOT-MOVED most commonly means:
-    //   1. 24V motor supply not connected (most likely)
-    //   2. Enable pin active-LOW on this hardware while SimpleFOC defaults HIGH
-    //   3. Broken wiring on phase or enable line
-    // The code auto-detects active-LOW by flipping and retrying once.
-    // IMPORTANT: if the flip fails, enable_active_high is restored AND driver->enable()
-    // is called to drive the pin back HIGH — without that second call the GPIO
-    // stays LOW and initFOC() runs with the driver disabled.
-    static constexpr float NOT_MOVED_THRESHOLD = 0.005f;  // rad (~0.29 deg)
-    {
-        motor.voltage_limit = alignVoltage;
-
-        // First reading
-        sensor->update();
-        float ang0 = sensor->getAngle();
-        logWrite(LOG_INFO,
-                 "Motor%c self-test: sensor_before=%.4f rad (%.1f deg)  "
-                 "will apply %.2fV for 800ms  GPIO%d=%s  enable_active_high=%d",
-                 label, ang0, ang0 * 57.2958f, alignVoltage,
-                 enPin, digitalRead(enPin) ? "HI" : "LO",
-                 (int)driver->enable_active_high);
-
-        motor.setPhaseVoltage(alignVoltage, 0, _3PI_2);
-        delay(800);
-        sensor->update();
-        float ang1    = sensor->getAngle();
-        float delta   = fabsf(ang1 - ang0);
-        motor.setPhaseVoltage(0, 0, 0);
-
-        logWrite(delta > NOT_MOVED_THRESHOLD ? LOG_INFO : LOG_WARN,
-                 "Motor%c self-test: sensor_after=%.4f rad (%.1f deg)  "
-                 "delta=%.4f rad (%.1f deg)  threshold=%.4f  "
-                 "GPIO%d=%s  enable_active_high=%d  [%s]",
-                 label, ang1, ang1 * 57.2958f,
-                 delta, delta * 57.2958f, NOT_MOVED_THRESHOLD,
-                 enPin, digitalRead(enPin) ? "HI" : "LO",
-                 (int)driver->enable_active_high,
-                 delta > NOT_MOVED_THRESHOLD ? "MOVED" : "NOT-MOVED");
-
-        if (delta <= NOT_MOVED_THRESHOLD) {
-            // Try flipping enable polarity — some gate drivers are active-LOW
-            logWrite(LOG_WARN,
-                     "Motor%c: NOT-MOVED (delta=%.4f <= %.4f) — flipping enable_active_high "
-                     "to LOW.  GPIO%d currently=%s",
-                     label, delta, NOT_MOVED_THRESHOLD,
-                     enPin, digitalRead(enPin) ? "HI" : "LO");
-
-            driver->enable_active_high = LOW;
-            driver->enable();
-            logWrite(LOG_INFO,
-                     "Motor%c after active-LOW flip+enable(): GPIO%d=%s  enable_active_high=%d",
-                     label, enPin, digitalRead(enPin) ? "HI" : "LO",
-                     (int)driver->enable_active_high);
-
-            sensor->update();
-            float ang2 = sensor->getAngle();
-            logWrite(LOG_INFO,
-                     "Motor%c active-LOW retry: sensor_before=%.4f rad (%.1f deg)  "
-                     "applying %.2fV for 800ms",
-                     label, ang2, ang2 * 57.2958f, alignVoltage);
-
-            motor.setPhaseVoltage(alignVoltage, 0, _3PI_2);
-            delay(800);
-            sensor->update();
-            float ang3   = sensor->getAngle();
-            float delta2 = fabsf(ang3 - ang2);
-            motor.setPhaseVoltage(0, 0, 0);
-
-            logWrite(delta2 > NOT_MOVED_THRESHOLD ? LOG_INFO : LOG_ERROR,
-                     "Motor%c active-LOW retry: sensor_after=%.4f rad (%.1f deg)  "
-                     "delta=%.4f rad (%.1f deg)  GPIO%d=%s  [%s]",
-                     label, ang3, ang3 * 57.2958f,
-                     delta2, delta2 * 57.2958f,
-                     enPin, digitalRead(enPin) ? "HI" : "LO",
-                     delta2 > NOT_MOVED_THRESHOLD
-                         ? "MOVED — active-LOW gate driver confirmed"
-                         : "STILL NOT MOVING — check wiring and 24V supply");
-
-            if (delta2 <= NOT_MOVED_THRESHOLD) {
-                // Neither polarity moved the motor.  Restore active-HIGH and
-                // re-enable so the GPIO is HIGH going into initFOC().  Without
-                // calling enable() here the pin stays LOW (left by the retry)
-                // and initFOC() runs with the driver disabled — guaranteed fail.
-                logWrite(LOG_WARN,
-                         "Motor%c: restoring active-HIGH and re-enabling before initFOC.  "
-                         "GPIO%d before restore=%s",
-                         label, enPin, digitalRead(enPin) ? "HI" : "LO");
-                driver->enable_active_high = HIGH;
-                driver->enable();  // drives pin HIGH — critical, do not remove
-                logWrite(LOG_INFO,
-                         "Motor%c after polarity restore+enable(): GPIO%d=%s  enable_active_high=%d",
-                         label, enPin, digitalRead(enPin) ? "HI" : "LO",
-                         (int)driver->enable_active_high);
-            }
-        }
-
-        motor.voltage_limit = voltageLimit;
-    }
-
-    // ── Pre-initFOC sensor snapshot ────────────────────────────────────────────
+    // ── Sensor snapshot before initFOC ────────────────────────────────────
+    // getSensorAngle() = raw [0, 2π] reading (no accumulated history)
+    // getAngle()       = accumulated angle tracking full rotations
+    // Both are logged so we can confirm the sensor is updating during initFOC.
     sensor->update();
-    float sensorAngle = sensor->getAngle();
+    float rawBefore = sensor->getSensorAngle();
+    float angBefore = sensor->getAngle();
     logWrite(LOG_INFO,
-             "Motor%c pre-initFOC: sensor=%.4f rad (%.1f deg)  "
-             "enable_active_high=%d  GPIO%d=%s  motor.enabled=%d",
-             label, sensorAngle, sensorAngle * 57.2958f,
-             (int)driver->enable_active_high, enPin,
-             digitalRead(enPin) ? "HI" : "LO",
-             (int)motor.enabled);
+             "Motor%c pre-initFOC sensor: raw=%.4f rad (%.1f deg)  accum=%.4f  GPIO%d=%s",
+             label, rawBefore, rawBefore * 57.2958f, angBefore,
+             enPin, digitalRead(enPin) ? "HI" : "LO");
 
     // Pre-set zero_electric_angle so initFOC() skips the physical alignment
     // sweep when a valid NVS calibration was loaded.
     if (useStored) {
         logWrite(LOG_INFO,
-                 "Motor%c: loading stored cal — zea=%.4f rad  dir=%+d  "
-                 "(physical alignment sweep will be skipped)",
+                 "Motor%c: loading stored cal zea=%.4f rad  dir=%+d  "
+                 "(physical alignment sweep skipped)",
                  label, storedZea, (int)storedDir);
         motor.zero_electric_angle = storedZea;
         motor.sensor_direction    = (Direction)storedDir;
     } else {
         logWrite(LOG_INFO,
-                 "Motor%c: no stored cal — live alignment sweep starting  "
-                 "(needs 24V on motor supply rail and driver enabled)",
-                 label);
+                 "Motor%c: no stored cal — live alignment starting.  "
+                 "sensor_align_voltage=%.1fV  GPIO%d=%s (must be HI to enable driver)",
+                 label, motor.voltage_sensor_align,
+                 enPin, digitalRead(enPin) ? "HI" : "LO");
     }
 
-    // alignSensor() clamps Uq to voltage_limit; raise it for initFOC and restore.
+    // alignSensor() clamps Uq to voltage_limit; raise it to match
+    // sensor_align_voltage so the full alignment voltage reaches the phases.
     motor.voltage_limit = alignVoltage;
     logWrite(LOG_INFO,
-             "Motor%c initFOC start: voltage_limit=%.2f  sensor_align_voltage=%.2f  "
-             "GPIO%d=%s  enable_active_high=%d",
+             "Motor%c initFOC start: voltage_limit=%.1fV  sensor_align_voltage=%.1fV  "
+             "GPIO%d=%s",
              label, motor.voltage_limit, motor.voltage_sensor_align,
-             enPin, digitalRead(enPin) ? "HI" : "LO",
-             (int)driver->enable_active_high);
+             enPin, digitalRead(enPin) ? "HI" : "LO");
 
     bool result = (bool)motor.initFOC();
     motor.voltage_limit = voltageLimit;
 
+    // ── Sensor snapshot after initFOC ────────────────────────────────────
+    sensor->update();
+    float rawAfter  = sensor->getSensorAngle();
+    float angAfter  = sensor->getAngle();
+    float rawDelta  = rawAfter - rawBefore;
+    // Handle wrap-around so delta is always the shortest arc
+    while (rawDelta >  M_PI) rawDelta -= 2.0f * M_PI;
+    while (rawDelta < -M_PI) rawDelta += 2.0f * M_PI;
+
     logWrite(result ? LOG_INFO : LOG_ERROR,
-             "Motor%c initFOC: %s  zero_elec_angle=%.4f rad  "
-             "shaft_angle=%.4f rad (%.1f deg)  sensor_dir=%+d",
-             label, result ? "OK" : "FAILED",
+             "Motor%c initFOC: %s  zea=%.4f rad  shaft=%.4f rad (%.1f deg)  sensor_dir=%+d",
+             label, result ? "OK" : "FAIL",
              motor.zero_electric_angle,
              motor.shaft_angle, motor.shaft_angle * 57.2958f,
              (int)motor.sensor_direction);
+    logWrite(LOG_INFO,
+             "Motor%c post-initFOC sensor: raw=%.4f rad (%.1f deg)  rawDelta=%.4f rad (%.1f deg)  "
+             "accum=%.4f  motor.shaft=%.4f",
+             label, rawAfter, rawAfter * 57.2958f,
+             rawDelta, rawDelta * 57.2958f,
+             angAfter, motor.shaft_angle);
 
     if (!result) {
-        logWrite(LOG_ERROR,
-                 "Motor%c initFOC FAILED — most common causes:\n"
-                 "  1. 24V not connected to motor driver power rail\n"
-                 "  2. zero_elec_angle=%.4f (NOT_SET sentinel = -12345 means no alignment ran)\n"
-                 "  3. Motor mechanically blocked or phase wiring open",
-                 label, motor.zero_electric_angle);
+        if (fabsf(rawDelta) > 0.05f) {
+            logWrite(LOG_ERROR,
+                     "Motor%c FAIL: sensor DID track (rawDelta=%.4f rad) but movement "
+                     "< SimpleFOC MIN_ANGLE_DETECT_MOVEMENT threshold.  "
+                     "Increase sensor_align_voltage (currently %.1fV) for more torque.",
+                     label, rawDelta, alignVoltage);
+        } else if (fabsf(rawDelta) < 0.002f) {
+            logWrite(LOG_ERROR,
+                     "Motor%c FAIL: sensor NOT tracking (rawDelta=%.4f rad ~0).  "
+                     "Motor did not rotate at all.  "
+                     "Check 24V on motor driver rail and phase wiring.",
+                     label, rawDelta);
+        } else {
+            logWrite(LOG_ERROR,
+                     "Motor%c FAIL: sensor delta=%.4f rad (ambiguous).  "
+                     "zea=%s  Check wiring and 24V supply.",
+                     label, rawDelta,
+                     motor.zero_electric_angle < -12344.0f
+                         ? "NOT_SET (alignment never started)" : "set");
+        }
     }
 
     return result;
@@ -221,8 +145,6 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
              config.voltage_power_supply, config.voltage_limit,
              config.sensor_align_voltage, config.pole_pairs, config.phase_resistance);
 
-    // Try to load NVS calibration.  Valid entry means previous live alignment
-    // succeeded; use stored angles so initFOC() skips the physical sweep.
     MotorCalibration cal = CalibrationStore::load();
     if (cal.valid) {
         logWrite(LOG_INFO,
@@ -241,8 +163,8 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
     _driverA->voltage_limit        = config.voltage_power_supply;
     int drvOkA = _driverA->init();
     logWrite(drvOkA ? LOG_INFO : LOG_ERROR,
-             "DriverA init %s (pwm=%d,%d,%d en=%d) vps=%.1f GPIO%d=%s",
-             drvOkA ? "OK" : "FAILED",
+             "DriverA init %s (pwm=%d,%d,%d en=%d) vps=%.1fV GPIO%d=%s",
+             drvOkA ? "OK" : "FAIL",
              pins.pwmA_a, pins.pwmA_b, pins.pwmA_c, pins.enA,
              _driverA->voltage_power_supply,
              pins.enA, digitalRead(pins.enA) ? "HI" : "LO");
@@ -251,8 +173,8 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
     _driverB->voltage_limit        = config.voltage_power_supply;
     int drvOkB = _driverB->init();
     logWrite(drvOkB ? LOG_INFO : LOG_ERROR,
-             "DriverB init %s (pwm=%d,%d,%d en=%d) vps=%.1f GPIO%d=%s",
-             drvOkB ? "OK" : "FAILED",
+             "DriverB init %s (pwm=%d,%d,%d en=%d) vps=%.1fV GPIO%d=%s",
+             drvOkB ? "OK" : "FAIL",
              pins.pwmB_a, pins.pwmB_b, pins.pwmB_c, pins.enB,
              _driverB->voltage_power_supply,
              pins.enB, digitalRead(pins.enB) ? "HI" : "LO");
@@ -261,7 +183,8 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
     Wire.begin(pins.sda, pins.scl);
     _mux = TCA9548A(pins.muxAddr);
     _mux.begin(Wire);
-    logWrite(LOG_INFO, "I2C mux TCA9548A at 0x%02x — sda=%d scl=%d chanA=%d chanB=%d",
+    logWrite(LOG_INFO,
+             "I2C mux TCA9548A at 0x%02x — sda=%d scl=%d chanA=%d chanB=%d",
              pins.muxAddr, pins.sda, pins.scl, pins.chanA, pins.chanB);
 
     if (!_sensorA) _sensorA = new MuxedMagneticSensorI2C(AS5600_I2C, _mux, pins.chanA);
@@ -273,30 +196,39 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
     float rawB = _sensorB->getSensorAngle();
     logWrite(rawA == 0.0f ? LOG_WARN : LOG_INFO,
              "SensorA raw angle: %.4f rad (%.1f deg)%s",
-             rawA, rawA * 57.2958f, rawA == 0.0f ? "  [WARN: reads zero — check mux/wiring]" : "");
+             rawA, rawA * 57.2958f,
+             rawA == 0.0f ? "  [WARN: reads zero — check mux/wiring]" : "");
     logWrite(rawB == 0.0f ? LOG_WARN : LOG_INFO,
              "SensorB raw angle: %.4f rad (%.1f deg)%s",
-             rawB, rawB * 57.2958f, rawB == 0.0f ? "  [WARN: reads zero — check mux/wiring]" : "");
+             rawB, rawB * 57.2958f,
+             rawB == 0.0f ? "  [WARN: reads zero — check mux/wiring]" : "");
 
     // ── Motor A ───────────────────────────────────────────────────────────────────
-    logWrite(LOG_INFO, "--- Motor A init sequence start ---");
+    // Disable Driver B before Motor A's alignment so it cannot resist Motor A
+    // through the coupled differential mechanism.
+    logWrite(LOG_INFO,
+             "--- Motor A init --- Disabling DriverB first to reduce coupling.  "
+             "GPIO%d=%s",
+             pins.enB, digitalRead(pins.enB) ? "HI" : "LO");
+    _driverB->disable();
+    logWrite(LOG_INFO, "DriverB disabled: GPIO%d=%s",
+             pins.enB, digitalRead(pins.enB) ? "HI" : "LO");
+
     bool okA = initOneMotor(_motorA, _driverA, _sensorA,
                             cal.zea_A, cal.dir_A, cal.valid,
                             config.sensor_align_voltage, config.voltage_limit,
                             pins.enA, 'A');
 
-    // Disable Motor A's driver before Motor B alignment — its cogging otherwise
-    // resists Motor B through the coupled differential mechanism.
+    // ── Motor B ───────────────────────────────────────────────────────────────────
+    // Disable Driver A before Motor B's alignment for the same reason.
     logWrite(LOG_INFO,
-             "Disabling DriverA before MotorB alignment (prevents coupling resistance).  "
-             "GPIO%d before disable=%s",
+             "--- Motor B init --- Disabling DriverA to reduce coupling.  "
+             "GPIO%d=%s",
              pins.enA, digitalRead(pins.enA) ? "HI" : "LO");
     _driverA->disable();
     logWrite(LOG_INFO, "DriverA disabled: GPIO%d=%s",
              pins.enA, digitalRead(pins.enA) ? "HI" : "LO");
 
-    // ── Motor B ───────────────────────────────────────────────────────────────────
-    logWrite(LOG_INFO, "--- Motor B init sequence start ---");
     bool okB = initOneMotor(_motorB, _driverB, _sensorB,
                             cal.zea_B, cal.dir_B, cal.valid,
                             config.sensor_align_voltage, config.voltage_limit,
@@ -313,12 +245,13 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
                  _motorB.zero_electric_angle, (int)_motorB.sensor_direction);
     }
 
-    logWrite(LOG_INFO,
-             "Re-enabling DriverA after MotorB alignment.  GPIO%d before enable=%s",
-             pins.enA, digitalRead(pins.enA) ? "HI" : "LO");
+    // Re-enable both drivers.
+    logWrite(LOG_INFO, "Re-enabling both drivers: GPIO%d GPIO%d", pins.enA, pins.enB);
     _driverA->enable();
-    logWrite(LOG_INFO, "DriverA re-enabled: GPIO%d=%s",
-             pins.enA, digitalRead(pins.enA) ? "HI" : "LO");
+    _driverB->enable();
+    logWrite(LOG_INFO, "Drivers re-enabled: GPIO%d=%s  GPIO%d=%s",
+             pins.enA, digitalRead(pins.enA) ? "HI" : "LO",
+             pins.enB, digitalRead(pins.enB) ? "HI" : "LO");
 
     // ── Handle calibration failure ────────────────────────────────────────────
     _calibrated = okA && okB;
@@ -327,11 +260,11 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
         _driverB->disable();
         _enabled = false;
         logWrite(LOG_ERROR,
-                 "FOC init failed (okA=%d okB=%d) — motors disabled.  "
-                 "Connect 24V power and send CLEAR_CAL via app to re-align.",
-                 (int)okA, (int)okB);
-        logWrite(LOG_ERROR,
-                 "After disable: GPIO%d(A)=%s  GPIO%d(B)=%s",
+                 "FOC init failed (okA=%d okB=%d) — drivers disabled.  "
+                 "If sensor rawDelta > 0 above: increase sensor_align_voltage (currently %.1fV).  "
+                 "If rawDelta ~ 0: check 24V motor supply and phase wiring.",
+                 (int)okA, (int)okB, config.sensor_align_voltage);
+        logWrite(LOG_ERROR, "After disable: GPIO%d(A)=%s  GPIO%d(B)=%s",
                  pins.enA, digitalRead(pins.enA) ? "HI" : "LO",
                  pins.enB, digitalRead(pins.enB) ? "HI" : "LO");
     } else {
@@ -365,8 +298,6 @@ void DifferentialTurret::applyPIDConfig() {
 
 void DifferentialTurret::update() {
     if (!_calibrated) {
-        // Emit a periodic reminder so the app log stays active and shows the
-        // system is alive but waiting for calibration.
         static uint32_t skipCount = 0;
         if (skipCount % 500 == 0) {
             logWrite(LOG_WARN,

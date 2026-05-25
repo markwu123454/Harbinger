@@ -1,10 +1,10 @@
 #pragma once
 #include "DifferentialTurret.h"
 
-// ── Bluetooth ─────────────────────────────────────────────────
-inline constexpr const char* BT_NAME = "Harbinger";
+// ── Bluetooth ──────────────────────────────────────────────
+ inline constexpr const char* BT_NAME = "Harbinger";
 
-// ── Turret ────────────────────────────────────────────────────
+// ── Turret ──────────────────────────────────────────────
 inline constexpr TurretConfig DEFAULT_TURRET_CONFIG {
     .voltage_power_supply = 24.0f,
     .voltage_limit        = 3.0f,
@@ -20,7 +20,10 @@ inline constexpr TurretConfig DEFAULT_TURRET_CONFIG {
     .velocity_D    =  0.0f,
     .velocity_ramp = 1000.0f,
     .velocity_lpf  = 0.01f,
-    .sensor_align_voltage = 6.0f,
+    // 12V gives ~1.1A through 11.1 Ohm phases — enough torque to rotate the
+    // differential mechanism during initFOC alignment.  6V was insufficient
+    // (caused rawDelta < SimpleFOC MIN_ANGLE_DETECT_MOVEMENT).
+    .sensor_align_voltage = 12.0f,
 };
 
 inline constexpr TurretPins DEFAULT_TURRET_PINS {
