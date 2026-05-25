@@ -13,6 +13,83 @@ void DifferentialTurret::clearCalibration() {
     CalibrationStore::clear();
 }
 
+// ── AS5600 health diagnostic ────────────────────────────────────────────────────
+//
+// Reads STATUS (0x0B), AGC (0x1A), and MAGNITUDE (0x1B–0x1C) from the AS5600
+// at I2C address 0x36 on the selected mux channel and logs the result.
+//
+// AS5600 STATUS register bits:
+//   bit 5 — MH: AGC at minimum → field too strong (magnet too close)
+//   bit 4 — ML: AGC at maximum → field too weak   (magnet too far)
+//   bit 3 — MD: magnet detected
+//
+// AGC value: 0 = saturated (too close / too strong)
+//            255 = nothing detected (too far / too weak)
+//            ~80–180 = typical good range
+//
+static void logAS5600Health(TCA9548A& mux, uint8_t channel, char label) {
+    mux.selectChannel(channel);
+
+    // STATUS 0x0B
+    Wire.beginTransmission(0x36);
+    Wire.write(0x0B);
+    uint8_t txErr = Wire.endTransmission(false);
+    if (txErr != 0) {
+        logWrite(LOG_ERROR,
+                 "Sensor%c AS5600 ch%d: no I2C ACK (err=%d) — "
+                 "check mux wiring, mux address (0x70?), and sensor power",
+                 label, channel, (int)txErr);
+        return;
+    }
+    Wire.requestFrom((uint8_t)0x36, (uint8_t)1);
+    uint8_t status = Wire.available() ? Wire.read() : 0x00;
+
+    // AGC 0x1A
+    Wire.beginTransmission(0x36);
+    Wire.write(0x1A);
+    Wire.endTransmission(false);
+    Wire.requestFrom((uint8_t)0x36, (uint8_t)1);
+    uint8_t agc = Wire.available() ? Wire.read() : 0xFF;
+
+    // MAGNITUDE 0x1B (high) + 0x1C (low), 12-bit
+    Wire.beginTransmission(0x36);
+    Wire.write(0x1B);
+    Wire.endTransmission(false);
+    Wire.requestFrom((uint8_t)0x36, (uint8_t)2);
+    uint16_t magnitude = 0;
+    if (Wire.available()) magnitude  = (uint16_t)Wire.read() << 8;
+    if (Wire.available()) magnitude |= Wire.read();
+    magnitude &= 0x0FFF;
+
+    bool md = (status >> 3) & 1;  // magnet detected
+    bool ml = (status >> 4) & 1;  // too weak (too far)
+    bool mh = (status >> 5) & 1;  // too strong (too close)
+
+    uint8_t     lvl;
+    const char* hint;
+    if (!md) {
+        lvl  = LOG_ERROR;
+        hint = "NO MAGNET DETECTED — sensor will not work";
+    } else if (mh) {
+        lvl  = LOG_WARN;
+        hint = "MAGNET TOO STRONG — move magnet farther from chip";
+    } else if (ml) {
+        lvl  = LOG_WARN;
+        hint = "MAGNET TOO WEAK — move magnet closer to chip";
+    } else {
+        lvl  = LOG_INFO;
+        hint = "magnet OK";
+    }
+
+    logWrite(lvl,
+             "Sensor%c AS5600: status=0x%02x  md=%d mh=%d ml=%d  "
+             "agc=%d/255  magnitude=%d/4095  [%s]",
+             label, status,
+             (int)md, (int)mh, (int)ml,
+             (int)agc, (int)magnitude,
+             hint);
+}
+
 // ── Per-motor init ────────────────────────────────────────────────────────────────
 
 bool DifferentialTurret::initOneMotor(
@@ -188,6 +265,12 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
     if (!_sensorB) _sensorB = new MuxedMagneticSensorI2C(AS5600_I2C, _mux, pins.chanB);
     _sensorA->init(&Wire);
     _sensorB->init(&Wire);
+
+    // ── AS5600 magnet health check ───────────────────────────────────────────────
+    // Read STATUS/AGC/MAGNITUDE before sensor.init() starts the angle tracking
+    // so the first thing logged is a clear go/no-go on magnet placement.
+    logAS5600Health(_mux, pins.chanA, 'A');
+    logAS5600Health(_mux, pins.chanB, 'B');
 
     float rawA = _sensorA->getSensorAngle();
     float rawB = _sensorB->getSensorAngle();
