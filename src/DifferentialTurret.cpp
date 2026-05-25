@@ -15,6 +15,22 @@ void DifferentialTurret::clearCalibration() {
     CalibrationStore::clear();
 }
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+// Apply a static phase voltage for durationMs, then check if the linked
+// sensor moved.  Returns the absolute angle delta in radians.
+static float motorMoveTest(BLDCMotor& motor, MuxedMagneticSensorI2C* sensor,
+                           float voltage, uint32_t durationMs) {
+    sensor->update();
+    float ang0 = sensor->getAngle();
+    motor.setPhaseVoltage(voltage, 0, _3PI_2);
+    delay(durationMs);
+    sensor->update();
+    float ang1 = sensor->getAngle();
+    motor.setPhaseVoltage(0, 0, 0);
+    return fabsf(ang1 - ang0);
+}
+
 void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& config) {
     // Route SimpleFOC's own diagnostic prints to Serial so they appear in
     // the serial monitor alongside our own messages.
@@ -105,13 +121,43 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
     int motOkA = _motorA.init();
     logWrite(motOkA ? LOG_INFO : LOG_ERROR, "MotorA init %s", motOkA ? "OK" : "FAILED");
 
-    // SimpleFOC 2.4 no longer calls enable() inside init(). The gate driver
-    // enable pin stays LOW until enable() is called explicitly. alignSensor()
-    // inside initFOC() must be able to physically rotate the motor, so the
-    // driver must be enabled first. motor.enabled stays true after this;
-    // DifferentialTurret::disable/enable toggle only the driver hardware enable
-    // pin, not the motor object, so loopFOC() keeps running for sensor tracking.
+    // SimpleFOC 2.4 BLDCMotor::init() calls enable() at the end, so the
+    // driver is already live here.  The explicit enable() below is redundant
+    // but harmless, and makes the intent clear.
     _motorA.enable();
+
+    // ── Motor-A movement self-test ────────────────────────────────────────
+    // Apply a static phase voltage and verify the sensor detects rotation.
+    // "NOT-MOVED" means the gate driver is not sourcing current — most likely
+    // the enable pin is active-LOW on this hardware while SimpleFOC defaults
+    // to active-HIGH.  We auto-detect and flip the polarity if needed.
+    {
+        _motorA.voltage_limit = config.sensor_align_voltage;
+        float delta = motorMoveTest(_motorA, _sensorA, config.sensor_align_voltage, 800);
+        logWrite(delta > 0.01f ? LOG_INFO : LOG_WARN,
+                 "MotorA self-test: delta=%.4f rad (%.1f deg)  en=GPIO%d=%s  [%s]",
+                 delta, delta * 57.2958f,
+                 pins.enA, digitalRead(pins.enA) ? "HI" : "LO",
+                 delta > 0.01f ? "MOVED" : "NOT-MOVED");
+
+        if (delta <= 0.01f) {
+            // Try active-LOW polarity
+            logWrite(LOG_WARN, "MotorA: flipping enable_active_high to LOW and retrying");
+            _driverA->enable_active_high = LOW;
+            _driverA->enable();
+            float delta2 = motorMoveTest(_motorA, _sensorA, config.sensor_align_voltage, 800);
+            logWrite(delta2 > 0.01f ? LOG_INFO : LOG_ERROR,
+                     "MotorA active-LOW retry: delta=%.4f rad  [%s]",
+                     delta2,
+                     delta2 > 0.01f ? "MOVED — active-LOW gate driver confirmed"
+                                    : "STILL NOT MOVING — check wiring and 24V supply");
+            if (delta2 <= 0.01f) {
+                _driverA->enable_active_high = HIGH;  // restore; nothing helped
+            }
+        }
+        // Restore runtime voltage limit — initFOC will re-raise it to sensor_align_voltage
+        _motorA.voltage_limit = config.voltage_limit;
+    }
 
     // Read the sensor through the motor's own linked sensor path (goes through
     // update() → correct mux channel) to confirm sensor data reaches the motor.
@@ -159,6 +205,33 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
     logWrite(motOkB ? LOG_INFO : LOG_ERROR, "MotorB init %s", motOkB ? "OK" : "FAILED");
 
     _motorB.enable();
+
+    // ── Motor-B movement self-test ────────────────────────────────────────
+    {
+        _motorB.voltage_limit = config.sensor_align_voltage;
+        float delta = motorMoveTest(_motorB, _sensorB, config.sensor_align_voltage, 800);
+        logWrite(delta > 0.01f ? LOG_INFO : LOG_WARN,
+                 "MotorB self-test: delta=%.4f rad (%.1f deg)  en=GPIO%d=%s  [%s]",
+                 delta, delta * 57.2958f,
+                 pins.enB, digitalRead(pins.enB) ? "HI" : "LO",
+                 delta > 0.01f ? "MOVED" : "NOT-MOVED");
+
+        if (delta <= 0.01f) {
+            logWrite(LOG_WARN, "MotorB: flipping enable_active_high to LOW and retrying");
+            _driverB->enable_active_high = LOW;
+            _driverB->enable();
+            float delta2 = motorMoveTest(_motorB, _sensorB, config.sensor_align_voltage, 800);
+            logWrite(delta2 > 0.01f ? LOG_INFO : LOG_ERROR,
+                     "MotorB active-LOW retry: delta=%.4f rad  [%s]",
+                     delta2,
+                     delta2 > 0.01f ? "MOVED — active-LOW gate driver confirmed"
+                                    : "STILL NOT MOVING — check wiring and 24V supply");
+            if (delta2 <= 0.01f) {
+                _driverB->enable_active_high = HIGH;
+            }
+        }
+        _motorB.voltage_limit = config.voltage_limit;
+    }
 
     _sensorB->update();
     float sensorAngleB = _sensorB->getAngle();
