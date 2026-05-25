@@ -85,6 +85,15 @@ public:
     void disable();
     [[nodiscard]] bool getEnabled() const;
 
+    /// True when both motors have a valid FOC zero-electric-angle (from live
+    /// alignment or NVS calibration).  False means initFOC failed and drivers
+    /// are disabled; send MSG_CLEAR_CALIBRATION via BT and power on with 24 V
+    /// to trigger a fresh alignment sweep.
+    [[nodiscard]] bool isCalibrated() const { return _calibrated; }
+
+    /// Erase NVS calibration so the next boot runs a live alignment sweep.
+    static void clearCalibration();
+
     /// Access underlying motors for Commander integration
     BLDCMotor& motorA();
     BLDCMotor& motorB();
@@ -101,9 +110,10 @@ private:
     MuxedMagneticSensorI2C* _sensorA  = nullptr;
     MuxedMagneticSensorI2C* _sensorB  = nullptr;
 
-    TurretMode   _mode    = TurretMode::VELOCITY;
-    bool         _enabled = true;
-    TurretConfig _config  = {};
+    TurretMode   _mode       = TurretMode::VELOCITY;
+    bool         _enabled    = true;
+    bool         _calibrated = false;
+    TurretConfig _config     = {};
 
     float _heading_target   = 0.0f;
     float _elevation_target = 0.0f;

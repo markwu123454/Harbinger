@@ -4,11 +4,12 @@
 
 // ── Message type IDs ───────────────────────────────────────────
 // Host → Device
-constexpr uint8_t MSG_PING        = 0x01;  // no payload
-constexpr uint8_t MSG_AIM         = 0x02;  // float heading, float elevation
-constexpr uint8_t MSG_ARM         = 0x03;  // uint8_t flags
-constexpr uint8_t MSG_SET_VOLTAGE = 0x04;  // float voltage
-constexpr uint8_t MSG_FIRE        = 0x05;  // no payload
+constexpr uint8_t MSG_PING              = 0x01;  // no payload
+constexpr uint8_t MSG_AIM               = 0x02;  // float heading, float elevation
+constexpr uint8_t MSG_ARM               = 0x03;  // uint8_t flags
+constexpr uint8_t MSG_SET_VOLTAGE       = 0x04;  // float voltage
+constexpr uint8_t MSG_FIRE              = 0x05;  // no payload
+constexpr uint8_t MSG_CLEAR_CALIBRATION = 0x06;  // no payload; clears NVS cal and reboots
 
 // Device → Host
 constexpr uint8_t MSG_PONG        = 0x81;  // no payload
@@ -18,17 +19,18 @@ constexpr uint8_t MSG_SHOT        = 0x84;  // uint32_t total, uint8_t count, [ui
 constexpr uint8_t MSG_LOG         = 0x85;  // uint8_t level, uint8_t slen, char msg[slen]
 
 // ── Fixed payload sizes (bytes, excluding type byte) ─────────────
- constexpr size_t PSIZ_PING        = 0;
-constexpr size_t PSIZ_AIM         = 8;   // 2× float32
-constexpr size_t PSIZ_ARM         = 1;   // uint8_t flags
-constexpr size_t PSIZ_SET_VOLTAGE = 4;   // float32
-constexpr size_t PSIZ_FIRE        = 0;
-constexpr size_t PSIZ_PONG        = 0;
-constexpr size_t PSIZ_STATE       = 5;   // uint8_t + float32
-constexpr size_t PSIZ_TELEMETRY   = 24;  // 6× float32
-constexpr size_t PSIZ_SHOT_BASE   = 5;   // uint32_t + uint8_t (header before stage data)
-constexpr size_t PSIZ_SHOT_STAGE  = 12;  // uint32_t + float32 + float32
-constexpr size_t PSIZ_LOG_HEADER  = 2;   // uint8_t level + uint8_t slen; slen more bytes follow
+ constexpr size_t PSIZ_PING              = 0;
+constexpr size_t PSIZ_AIM               = 8;   // 2× float32
+constexpr size_t PSIZ_ARM               = 1;   // uint8_t flags
+constexpr size_t PSIZ_SET_VOLTAGE       = 4;   // float32
+constexpr size_t PSIZ_FIRE              = 0;
+constexpr size_t PSIZ_CLEAR_CALIBRATION = 0;
+constexpr size_t PSIZ_PONG              = 0;
+constexpr size_t PSIZ_STATE             = 5;   // uint8_t + float32
+constexpr size_t PSIZ_TELEMETRY         = 24;  // 6× float32
+constexpr size_t PSIZ_SHOT_BASE         = 5;   // uint32_t + uint8_t (header before stage data)
+constexpr size_t PSIZ_SHOT_STAGE        = 12;  // uint32_t + float32 + float32
+constexpr size_t PSIZ_LOG_HEADER        = 2;   // uint8_t level + uint8_t slen; slen more bytes follow
 
 // ── Log levels ───────────────────────────────────────────────
 constexpr uint8_t LOG_INFO  = 0;
@@ -56,6 +58,7 @@ inline int armDecode(uint8_t flags, uint8_t shift) {
 constexpr uint8_t STATE_MASTER_ARM = 0x01;
 constexpr uint8_t STATE_TURRET_ARM = 0x02;
 constexpr uint8_t STATE_GUN_ARM    = 0x04;
+constexpr uint8_t STATE_CAL_OK     = 0x08;  // both motors have valid FOC calibration
 
 // ── Packed message structs ──────────────────────────────────────
 #pragma pack(push, 1)

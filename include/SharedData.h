@@ -22,6 +22,7 @@ struct SharedData {
     float motorA_acc       = 0;
     float motorB_vel       = 0;
     float motorB_acc       = 0;
+    bool  calibrated       = false;  // true when both motors have valid FOC calibration
 
     bool stateChanged = false;
 };
@@ -39,6 +40,7 @@ struct WifiSnapshot {
     float motorB_vel, motorB_acc;
     bool  masterArm, turretArm, gunArm;
     float targetVoltage;
+    bool  calibrated;
     bool  stateChanged;
 };
 
@@ -69,6 +71,7 @@ MotorSnapshot motorRead();
 void          motorWrite(float heading, float elevation,
                          float aVel, float aAcc,
                          float bVel, float bAcc);
+void          motorSetCalibrated(bool cal);
 
 WifiSnapshot  wifiRead();
 void          wifiWriteAim(float heading, float elevation);

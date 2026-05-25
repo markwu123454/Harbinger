@@ -1,5 +1,6 @@
 #include "DifferentialTurret.h"
 #include "SharedData.h"
+#include "Calibration.h"
 #include <Wire.h>
 
 DifferentialTurret::DifferentialTurret()
@@ -7,6 +8,10 @@ DifferentialTurret::DifferentialTurret()
     , _motorB(11, 11.1f)
     , _config() {
     Serial.printf("[TURRET] Constructor called with default motor params (poles=11, resistance=11.1)\n");
+}
+
+void DifferentialTurret::clearCalibration() {
+    CalibrationStore::clear();
 }
 
 void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& config) {
@@ -26,6 +31,20 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
     _motorB = BLDCMotor(config.pole_pairs, config.phase_resistance);
     Serial.printf("[TURRET] Motors reconstructed with poles=%d, resistance=%.2f\n",
                   config.pole_pairs, config.phase_resistance);
+
+    // ── Try to load NVS calibration ───────────────────────────────────────
+    // A valid entry means a previous live alignment succeeded.  We pass the
+    // stored angles directly to initFOC() to skip the physical alignment sweep,
+    // which requires 24 V motor power and physically rotates the shafts.
+    MotorCalibration cal = CalibrationStore::load();
+    if (cal.valid) {
+        logWrite(LOG_INFO,
+                 "NVS cal loaded: zeaA=%.4f dir=%+d  zeaB=%.4f dir=%+d",
+                 cal.zea_A, (int)cal.dir_A, cal.zea_B, (int)cal.dir_B);
+    } else {
+        logWrite(LOG_WARN,
+                 "No NVS cal — live FOC alignment will run (requires 24V motor power)");
+    }
 
     _driverA = new BLDCDriver3PWM(pins.pwmA_a, pins.pwmA_b, pins.pwmA_c, pins.enA);
     _driverB = new BLDCDriver3PWM(pins.pwmB_a, pins.pwmB_b, pins.pwmB_c, pins.enB);
@@ -104,7 +123,9 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
     // ineffective when voltage_limit < sensor_align_voltage.  Raise the limit
     // for the duration of initFOC then restore it.
     _motorA.voltage_limit = config.sensor_align_voltage;
-    bool okA = _motorA.initFOC();
+    bool okA = cal.valid
+        ? (bool)_motorA.initFOC(cal.zea_A, (Direction)cal.dir_A)
+        : (bool)_motorA.initFOC();
     _motorA.voltage_limit = config.voltage_limit;
     logWrite(okA ? LOG_INFO : LOG_ERROR,
              "MotorA initFOC: %s  zero_elec_angle=%.4f rad  shaft_angle=%.4f rad (%.1f deg)",
@@ -136,12 +157,29 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
              sensorAngleB, sensorAngleB * 57.2958f);
 
     _motorB.voltage_limit = config.sensor_align_voltage;
-    bool okB = _motorB.initFOC();
+    bool okB = cal.valid
+        ? (bool)_motorB.initFOC(cal.zea_B, (Direction)cal.dir_B)
+        : (bool)_motorB.initFOC();
+    _motorB.voltage_limit = config.voltage_limit;  // restored (was missing before this fix)
     logWrite(okB ? LOG_INFO : LOG_ERROR,
              "MotorB initFOC: %s  zero_elec_angle=%.4f rad  shaft_angle=%.4f rad (%.1f deg)",
              okB ? "OK" : "FAILED",
              _motorB.zero_electric_angle,
              _motorB.shaft_angle, _motorB.shaft_angle * 57.2958f);
+
+    // ── Save calibration after a successful live alignment ────────────────
+    // Only save when we ran live alignment (cal.valid==false) and both motors
+    // succeeded.  If cal was already valid we just used the stored values.
+    if (!cal.valid && okA && okB) {
+        CalibrationStore::save(
+            _motorA.zero_electric_angle, _motorA.sensor_direction,
+            _motorB.zero_electric_angle, _motorB.sensor_direction
+        );
+        logWrite(LOG_INFO,
+                 "Calibration saved to NVS (zeaA=%.4f dir=%+d  zeaB=%.4f dir=%+d)",
+                 _motorA.zero_electric_angle, (int)_motorA.sensor_direction,
+                 _motorB.zero_electric_angle, (int)_motorB.sensor_direction);
+    }
 
     // Restore Motor A's driver. Both motor objects remain enabled so loopFOC()
     // runs for both. The control task calls turret_.disable() immediately on
@@ -149,7 +187,23 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
     // pins low via the driver hardware.
     _driverA->enable();
 
-    Serial.printf("[TURRET] begin() complete\n");
+    // ── Handle calibration failure ────────────────────────────────────────
+    // If initFOC failed for either motor (zero_electric_angle still NOT_SET),
+    // running loopFOC() would produce garbage phase voltages.  Disable both
+    // drivers and block the control loop until the user clears NVS calibration
+    // (MSG_CLEAR_CALIBRATION via BT), powers on with 24 V, and reboots.
+    _calibrated = okA && okB;
+    if (!_calibrated) {
+        _driverA->disable();
+        _driverB->disable();
+        _enabled = false;
+        logWrite(LOG_ERROR,
+                 "FOC init failed — motors disabled. "
+                 "Connect 24V power and send CLEAR_CAL via app to re-align.");
+    }
+
+    Serial.printf("[TURRET] begin() complete — calibrated=%s\n",
+                  _calibrated ? "YES" : "NO");
 }
 
 void DifferentialTurret::applyPIDConfig() {
@@ -172,6 +226,8 @@ void DifferentialTurret::applyPIDConfig() {
 }
 
 void DifferentialTurret::update() {
+    if (!_calibrated) return;  // do not run FOC with invalid zero_electric_angle
+
     _motorA.loopFOC();
     _motorB.loopFOC();
 
@@ -259,6 +315,7 @@ float DifferentialTurret::getElevation() const {
 }
 
 void DifferentialTurret::enable() {
+    if (!_calibrated) return;  // refuse to enable with invalid FOC state
     _driverA->enable();
     _driverB->enable();
     _enabled = true;

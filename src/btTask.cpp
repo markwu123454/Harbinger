@@ -1,4 +1,5 @@
 #include "BtTask.h"
+#include "Calibration.h"
 #include "SharedData.h"
 #include "Config.h"
 #include "proto.h"
@@ -45,6 +46,9 @@ void BtTask::run() {
                 case MSG_FIRE:
                     processMessage(b, nullptr, 0);
                     break;
+                case MSG_CLEAR_CALIBRATION:
+                    processMessage(b, nullptr, 0);
+                    break;
                 case MSG_AIM:
                     rxType_ = b; rxExpected_ = PSIZ_AIM; rxGot_ = 0;
                     rxState_ = RxState::PAYLOAD;
@@ -76,7 +80,7 @@ void BtTask::run() {
         // ── Connection lifecycle ─────────────────────────────────
         if (connected && !wasConnected) {
             Serial.println("[BT] Client connected — sending initial state + telemetry");
-            sendState(snap.masterArm, snap.turretArm, snap.gunArm, snap.targetVoltage);
+            sendState(snap.masterArm, snap.turretArm, snap.gunArm, snap.targetVoltage, snap.calibrated);
             sendTelemetry(snap.currentHeading, snap.currentElevation,
                           snap.motorA_vel, snap.motorA_acc,
                           snap.motorB_vel, snap.motorB_acc);
@@ -96,9 +100,9 @@ void BtTask::run() {
 
         // ── TX: state change ─────────────────────────────────────
         if (snap.stateChanged) {
-            Serial.printf("[BT] State change — master=%d turret=%d gun=%d v=%.2f\n",
-                snap.masterArm, snap.turretArm, snap.gunArm, snap.targetVoltage);
-            sendState(snap.masterArm, snap.turretArm, snap.gunArm, snap.targetVoltage);
+            Serial.printf("[BT] State change — master=%d turret=%d gun=%d v=%.2f cal=%d\n",
+                snap.masterArm, snap.turretArm, snap.gunArm, snap.targetVoltage, (int)snap.calibrated);
+            sendState(snap.masterArm, snap.turretArm, snap.gunArm, snap.targetVoltage, snap.calibrated);
         }
 
         // ── TX: log queue ────────────────────────────────────────
@@ -149,6 +153,12 @@ void BtTask::processMessage(uint8_t type, const uint8_t* payload, size_t) {
     case MSG_FIRE:
         wifiWriteFire();
         break;
+    case MSG_CLEAR_CALIBRATION:
+        CalibrationStore::clear();
+        sendLog(LOG_INFO, "NVS cal cleared — rebooting for live FOC alignment");
+        vTaskDelay(100 / portTICK_PERIOD_MS);  // give BT stack time to transmit the log
+        ESP.restart();
+        break;
     default:
         break;
     }
@@ -156,11 +166,12 @@ void BtTask::processMessage(uint8_t type, const uint8_t* payload, size_t) {
 
 // ── TX helpers ────────────────────────────────────────────────
 
-void BtTask::sendState(bool masterArm, bool turretArm, bool gunArm, float targetV) {
+void BtTask::sendState(bool masterArm, bool turretArm, bool gunArm, float targetV, bool calibrated) {
     PktState pkt;
-    pkt.flags    = (masterArm ? STATE_MASTER_ARM : 0)
-                 | (turretArm ? STATE_TURRET_ARM : 0)
-                 | (gunArm    ? STATE_GUN_ARM    : 0);
+    pkt.flags    = (masterArm  ? STATE_MASTER_ARM : 0)
+                 | (turretArm  ? STATE_TURRET_ARM : 0)
+                 | (gunArm     ? STATE_GUN_ARM    : 0)
+                 | (calibrated ? STATE_CAL_OK     : 0);
     pkt.target_v = targetV;
     sendRaw(MSG_STATE, &pkt, sizeof(pkt));
 }
