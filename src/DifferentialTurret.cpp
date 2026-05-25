@@ -13,24 +13,19 @@ void DifferentialTurret::clearCalibration() {
     CalibrationStore::clear();
 }
 
-// ── AS5600 health diagnostic ────────────────────────────────────────────────────
+// ── AS5600 health diagnostic ─────────────────────────────────────────────────
 //
-// Reads STATUS (0x0B), AGC (0x1A), and MAGNITUDE (0x1B–0x1C) from the AS5600
-// at I2C address 0x36 on the selected mux channel and logs the result.
-//
-// AS5600 STATUS register bits:
+// AS5600 STATUS register (0x0B):
 //   bit 5 — MH: AGC at minimum → field too strong (magnet too close)
 //   bit 4 — ML: AGC at maximum → field too weak   (magnet too far)
 //   bit 3 — MD: magnet detected
 //
-// AGC value: 0 = saturated (too close / too strong)
-//            255 = nothing detected (too far / too weak)
-//            ~80–180 = typical good range
+// AGC (0x1A):  0 = saturated (too close)  255 = no signal (too far)
+//                  typical good range ≈ 80–180
 //
 static void logAS5600Health(TCA9548A& mux, uint8_t channel, char label) {
     mux.selectChannel(channel);
 
-    // STATUS 0x0B
     Wire.beginTransmission(0x36);
     Wire.write(0x0B);
     uint8_t txErr = Wire.endTransmission(false);
@@ -44,14 +39,12 @@ static void logAS5600Health(TCA9548A& mux, uint8_t channel, char label) {
     Wire.requestFrom((uint8_t)0x36, (uint8_t)1);
     uint8_t status = Wire.available() ? Wire.read() : 0x00;
 
-    // AGC 0x1A
     Wire.beginTransmission(0x36);
     Wire.write(0x1A);
     Wire.endTransmission(false);
     Wire.requestFrom((uint8_t)0x36, (uint8_t)1);
     uint8_t agc = Wire.available() ? Wire.read() : 0xFF;
 
-    // MAGNITUDE 0x1B (high) + 0x1C (low), 12-bit
     Wire.beginTransmission(0x36);
     Wire.write(0x1B);
     Wire.endTransmission(false);
@@ -61,9 +54,9 @@ static void logAS5600Health(TCA9548A& mux, uint8_t channel, char label) {
     if (Wire.available()) magnitude |= Wire.read();
     magnitude &= 0x0FFF;
 
-    bool md = (status >> 3) & 1;  // magnet detected
-    bool ml = (status >> 4) & 1;  // too weak (too far)
-    bool mh = (status >> 5) & 1;  // too strong (too close)
+    bool md = (status >> 3) & 1;
+    bool ml = (status >> 4) & 1;
+    bool mh = (status >> 5) & 1;
 
     uint8_t     lvl;
     const char* hint;
@@ -90,44 +83,45 @@ static void logAS5600Health(TCA9548A& mux, uint8_t channel, char label) {
              hint);
 }
 
-// ── Per-motor init ────────────────────────────────────────────────────────────────
+// ── Step 1: motor.init() + enable ────────────────────────────────────────────
+// Call for BOTH motors before calling alignMotor() on either, so the idle motor
+// can be held at a static phase voltage during the other's alignment sweep.
 
-bool DifferentialTurret::initOneMotor(
+bool DifferentialTurret::setupMotor(
     BLDCMotor& motor, BLDCDriver3PWM* driver, MuxedMagneticSensorI2C* sensor,
-    float storedZea, int8_t storedDir, bool useStored,
-    float alignVoltage, float voltageLimit, uint8_t enPin, char label)
+    float voltageLimit, uint8_t enPin, char label)
 {
-    logWrite(LOG_INFO,
-             "Motor%c init: alignV=%.1fV voltL=%.1fV enPin=%d "
-             "driver_vps=%.1fV driver_vlim=%.1fV GPIO%d=%s",
-             label, alignVoltage, voltageLimit, enPin,
-             driver->voltage_power_supply, driver->voltage_limit,
-             enPin, digitalRead(enPin) ? "HI" : "LO");
-
     motor.linkDriver(driver);
     motor.linkSensor(sensor);
-    motor.voltage_limit   = voltageLimit;
-    motor.velocity_limit  = _config.velocity_limit;
-    motor.controller      = angle;
-    // NOTE: do NOT set voltage_sensor_align here — motor.init() resets it
-    // to voltage_limit internally.  It is set again right before initFOC().
+    motor.voltage_limit  = voltageLimit;
+    motor.velocity_limit = _config.velocity_limit;
+    motor.controller     = angle;
+    // Do NOT set voltage_sensor_align here — motor.init() resets it to voltage_limit
 
     int ok = motor.init();
     motor.enable();
     logWrite(ok ? LOG_INFO : LOG_ERROR,
-             "Motor%c motor.init()=%s  after enable(): GPIO%d=%s  "
-             "enable_active_high=%d  motor.enabled=%d",
+             "Motor%c setup: init=%s  GPIO%d=%s  enable_active_high=%d",
              label, ok ? "OK" : "FAIL",
              enPin, digitalRead(enPin) ? "HI" : "LO",
-             (int)driver->enable_active_high, (int)motor.enabled);
+             (int)driver->enable_active_high);
+    return ok != 0;
+}
 
-    // ── Sensor snapshot before initFOC ────────────────────────────────────
+// ── Step 2: FOC alignment ─────────────────────────────────────────────────────
+// Caller must apply a static holding voltage to the OTHER motor via
+// setPhaseVoltage() before calling this, then release it after.
+
+bool DifferentialTurret::alignMotor(
+    BLDCMotor& motor, MuxedMagneticSensorI2C* sensor,
+    float storedZea, int8_t storedDir, bool useStored,
+    float alignVoltage, float voltageLimit, uint8_t enPin, char label)
+{
     sensor->update();
     float rawBefore = sensor->getSensorAngle();
-    float angBefore = sensor->getAngle();
     logWrite(LOG_INFO,
-             "Motor%c pre-initFOC sensor: raw=%.4f rad (%.1f deg)  accum=%.4f  GPIO%d=%s",
-             label, rawBefore, rawBefore * 57.2958f, angBefore,
+             "Motor%c pre-align sensor: raw=%.4f rad (%.1f deg)  GPIO%d=%s",
+             label, rawBefore, rawBefore * 57.2958f,
              enPin, digitalRead(enPin) ? "HI" : "LO");
 
     if (useStored) {
@@ -137,33 +131,24 @@ bool DifferentialTurret::initOneMotor(
                  label, storedZea, (int)storedDir);
         motor.zero_electric_angle = storedZea;
         motor.sensor_direction    = (Direction)storedDir;
-    } else {
-        // Set sensor_align_voltage NOW — after motor.init() which resets it.
-        // voltage_limit is also raised to alignVoltage so setPhaseVoltage()
-        // inside alignSensor() is not clamped below the target voltage.
-        motor.voltage_sensor_align = alignVoltage;
-        motor.voltage_limit        = alignVoltage;
-        logWrite(LOG_INFO,
-                 "Motor%c: live alignment starting.  "
-                 "voltage_limit=%.1fV  sensor_align_voltage=%.1fV  "
-                 "GPIO%d=%s (must be HI to enable driver)",
-                 label, motor.voltage_limit, motor.voltage_sensor_align,
-                 enPin, digitalRead(enPin) ? "HI" : "LO");
     }
 
+    // MUST set voltage_sensor_align AFTER motor.init() (called in setupMotor) —
+    // init() resets it to voltage_limit internally.
+    // Raise voltage_limit too so setPhaseVoltage() inside alignSensor() isn't clamped.
+    motor.voltage_sensor_align = alignVoltage;
+    motor.voltage_limit        = alignVoltage;
     logWrite(LOG_INFO,
-             "Motor%c calling initFOC: voltage_limit=%.1fV  "
-             "sensor_align_voltage=%.1fV  GPIO%d=%s",
+             "Motor%c calling initFOC: voltage_limit=%.1fV  sensor_align_voltage=%.1fV  "
+             "GPIO%d=%s  useStored=%d",
              label, motor.voltage_limit, motor.voltage_sensor_align,
-             enPin, digitalRead(enPin) ? "HI" : "LO");
+             enPin, digitalRead(enPin) ? "HI" : "LO", (int)useStored);
 
     bool result = (bool)motor.initFOC();
-    motor.voltage_limit = voltageLimit;  // restore runtime limit
+    motor.voltage_limit = voltageLimit;
 
-    // ── Sensor snapshot after initFOC ────────────────────────────────────
     sensor->update();
     float rawAfter = sensor->getSensorAngle();
-    float angAfter = sensor->getAngle();
     float rawDelta = rawAfter - rawBefore;
     while (rawDelta >  (float)M_PI) rawDelta -= 2.0f * (float)M_PI;
     while (rawDelta < -(float)M_PI) rawDelta += 2.0f * (float)M_PI;
@@ -175,10 +160,8 @@ bool DifferentialTurret::initOneMotor(
              motor.shaft_angle, motor.shaft_angle * 57.2958f,
              (int)motor.sensor_direction);
     logWrite(LOG_INFO,
-             "Motor%c post-initFOC sensor: raw=%.4f rad (%.1f deg)  "
-             "rawDelta=%.4f rad (%.1f deg)  accum=%.4f",
-             label, rawAfter, rawAfter * 57.2958f,
-             rawDelta, rawDelta * 57.2958f, angAfter);
+             "Motor%c post-align sensor: raw=%.4f  rawDelta=%.4f rad (%.1f deg)",
+             label, rawAfter, rawDelta, rawDelta * 57.2958f);
 
     if (!result) {
         if (fabsf(rawDelta) > 0.05f) {
@@ -189,23 +172,23 @@ bool DifferentialTurret::initOneMotor(
                      label, rawDelta, rawDelta * 57.2958f, alignVoltage);
         } else if (fabsf(rawDelta) < 0.005f) {
             logWrite(LOG_ERROR,
-                     "Motor%c FAIL: sensor NOT tracking (rawDelta=%.4f rad ~0).  "
-                     "Motor did not rotate at all.  "
-                     "Check 24V on motor driver power rail and phase wiring.",
-                     label, rawDelta);
+                     "Motor%c FAIL: sensor did not move at all (rawDelta=%.4f rad).  "
+                     "Check 24V on motor driver power rail.  GPIO%d=%s.",
+                     label, rawDelta,
+                     enPin, digitalRead(enPin) ? "HI" : "LO");
         } else {
             logWrite(LOG_ERROR,
-                     "Motor%c FAIL: tiny movement (rawDelta=%.3f rad = %.1f deg).  "
-                     "Motor barely moved — increase sensor_align_voltage (%.1fV) "
-                     "for more torque, or check mechanical load.",
-                     label, rawDelta, rawDelta * 57.2958f, alignVoltage);
+                     "Motor%c FAIL: tiny movement (rawDelta=%.4f rad).  "
+                     "Increase sensor_align_voltage (currently %.1fV) or check for "
+                     "mechanical binding.",
+                     label, rawDelta, alignVoltage);
         }
     }
 
     return result;
 }
 
-// ── begin() ─────────────────────────────────────────────────────────────────────────────
+// ── begin() ─────────────────────────────────────────────────────────────────
 
 void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& config) {
     SimpleFOCDebug::enable(&Serial);
@@ -214,8 +197,7 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
     _motorA = BLDCMotor(config.pole_pairs, config.phase_resistance);
     _motorB = BLDCMotor(config.pole_pairs, config.phase_resistance);
 
-    logWrite(LOG_INFO,
-             "begin(): vps=%.1fV vlim=%.1fV align=%.1fV poles=%d Rphase=%.2f",
+    logWrite(LOG_INFO, "begin(): vps=%.1fV vlim=%.1fV align=%.1fV poles=%d Rphase=%.2f",
              config.voltage_power_supply, config.voltage_limit,
              config.sensor_align_voltage, config.pole_pairs, config.phase_resistance);
 
@@ -225,8 +207,7 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
                  "NVS cal loaded: zeaA=%.4f dir=%+d  zeaB=%.4f dir=%+d",
                  cal.zea_A, (int)cal.dir_A, cal.zea_B, (int)cal.dir_B);
     } else {
-        logWrite(LOG_WARN,
-                 "No NVS cal — live FOC alignment will run (requires 24V motor power)");
+        logWrite(LOG_WARN, "No NVS cal — live FOC alignment will run (requires 24V motor power)");
     }
 
     // ── Drivers ───────────────────────────────────────────────────────────────
@@ -236,29 +217,24 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
     _driverA->voltage_power_supply = config.voltage_power_supply;
     _driverA->voltage_limit        = config.voltage_power_supply;
     int drvOkA = _driverA->init();
-    logWrite(drvOkA ? LOG_INFO : LOG_ERROR,
-             "DriverA init %s (pwm=%d,%d,%d en=%d) vps=%.1fV GPIO%d=%s",
-             drvOkA ? "OK" : "FAIL",
+    logWrite(drvOkA ? LOG_INFO : LOG_ERROR, "DriverA init %s (pwm=%d,%d,%d en=%d) vps=%.1fV",
+             drvOkA ? "OK" : "FAILED",
              pins.pwmA_a, pins.pwmA_b, pins.pwmA_c, pins.enA,
-             _driverA->voltage_power_supply,
-             pins.enA, digitalRead(pins.enA) ? "HI" : "LO");
+             config.voltage_power_supply);
 
     _driverB->voltage_power_supply = config.voltage_power_supply;
     _driverB->voltage_limit        = config.voltage_power_supply;
     int drvOkB = _driverB->init();
-    logWrite(drvOkB ? LOG_INFO : LOG_ERROR,
-             "DriverB init %s (pwm=%d,%d,%d en=%d) vps=%.1fV GPIO%d=%s",
-             drvOkB ? "OK" : "FAIL",
+    logWrite(drvOkB ? LOG_INFO : LOG_ERROR, "DriverB init %s (pwm=%d,%d,%d en=%d) vps=%.1fV",
+             drvOkB ? "OK" : "FAILED",
              pins.pwmB_a, pins.pwmB_b, pins.pwmB_c, pins.enB,
-             _driverB->voltage_power_supply,
-             pins.enB, digitalRead(pins.enB) ? "HI" : "LO");
+             config.voltage_power_supply);
 
-    // ── Sensors via TCA9548A mux ────────────────────────────────────────────────
+    // ── Sensors via TCA9548A mux ──────────────────────────────────────────────
     Wire.begin(pins.sda, pins.scl);
     _mux = TCA9548A(pins.muxAddr);
     _mux.begin(Wire);
-    logWrite(LOG_INFO,
-             "I2C mux TCA9548A at 0x%02x — sda=%d scl=%d chanA=%d chanB=%d",
+    logWrite(LOG_INFO, "I2C mux TCA9548A at 0x%02x — sda=%d scl=%d chanA=%d chanB=%d",
              pins.muxAddr, pins.sda, pins.scl, pins.chanA, pins.chanB);
 
     if (!_sensorA) _sensorA = new MuxedMagneticSensorI2C(AS5600_I2C, _mux, pins.chanA);
@@ -266,48 +242,46 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
     _sensorA->init(&Wire);
     _sensorB->init(&Wire);
 
-    // ── AS5600 magnet health check ───────────────────────────────────────────────
-    // Read STATUS/AGC/MAGNITUDE before sensor.init() starts the angle tracking
-    // so the first thing logged is a clear go/no-go on magnet placement.
+    logWrite(LOG_INFO, "--- AS5600 magnet health check ---");
     logAS5600Health(_mux, pins.chanA, 'A');
     logAS5600Health(_mux, pins.chanB, 'B');
 
     float rawA = _sensorA->getSensorAngle();
     float rawB = _sensorB->getSensorAngle();
     logWrite(rawA == 0.0f ? LOG_WARN : LOG_INFO,
-             "SensorA raw angle: %.4f rad (%.1f deg)%s",
-             rawA, rawA * 57.2958f,
-             rawA == 0.0f ? "  [WARN: reads zero — check mux/wiring]" : "");
+             "SensorA raw angle: %.4f rad (%.1f deg)", rawA, rawA * 57.2958f);
     logWrite(rawB == 0.0f ? LOG_WARN : LOG_INFO,
-             "SensorB raw angle: %.4f rad (%.1f deg)%s",
-             rawB, rawB * 57.2958f,
-             rawB == 0.0f ? "  [WARN: reads zero — check mux/wiring]" : "");
+             "SensorB raw angle: %.4f rad (%.1f deg)", rawB, rawB * 57.2958f);
 
-    // ── Motor A ───────────────────────────────────────────────────────────────────
+    // ── Setup both motors (init only, no FOC alignment yet) ──────────────────
+    // Both must be fully initialised before alignment so either can hold the
+    // other at a static phase voltage while its counterpart runs initFOC().
+    logWrite(LOG_INFO, "--- Setting up both motors ---");
+    setupMotor(_motorA, _driverA, _sensorA, config.voltage_limit, pins.enA, 'A');
+    setupMotor(_motorB, _driverB, _sensorB, config.voltage_limit, pins.enB, 'B');
+
+    // ── Align Motor A ─────────────────────────────────────────────────────────
+    // Hold Motor B at a fixed electrical angle so the differential coupling
+    // cannot absorb Motor A's torque.  Without this, Motor B (the mechanically
+    // free end) rotates instead of Motor A, and Motor A's sensor reads delta≈0.
     logWrite(LOG_INFO,
-             "--- Motor A init --- Disabling DriverB first to reduce coupling.  GPIO%d=%s",
-             pins.enB, digitalRead(pins.enB) ? "HI" : "LO");
-    _driverB->disable();
-    logWrite(LOG_INFO, "DriverB disabled: GPIO%d=%s",
-             pins.enB, digitalRead(pins.enB) ? "HI" : "LO");
+             "--- Motor A FOC align (Motor B held at %.1fV DC to resist coupling) ---",
+             config.sensor_align_voltage);
+    _motorB.setPhaseVoltage(config.sensor_align_voltage, 0.0f, 0.0f);
+    bool okA = alignMotor(_motorA, _sensorA,
+                          cal.zea_A, cal.dir_A, cal.valid,
+                          config.sensor_align_voltage, config.voltage_limit, pins.enA, 'A');
+    _motorB.setPhaseVoltage(0.0f, 0.0f, 0.0f);
 
-    bool okA = initOneMotor(_motorA, _driverA, _sensorA,
-                            cal.zea_A, cal.dir_A, cal.valid,
-                            config.sensor_align_voltage, config.voltage_limit,
-                            pins.enA, 'A');
-
-    // ── Motor B ───────────────────────────────────────────────────────────────────
+    // ── Align Motor B ─────────────────────────────────────────────────────────
     logWrite(LOG_INFO,
-             "--- Motor B init --- Disabling DriverA to reduce coupling.  GPIO%d=%s",
-             pins.enA, digitalRead(pins.enA) ? "HI" : "LO");
-    _driverA->disable();
-    logWrite(LOG_INFO, "DriverA disabled: GPIO%d=%s",
-             pins.enA, digitalRead(pins.enA) ? "HI" : "LO");
-
-    bool okB = initOneMotor(_motorB, _driverB, _sensorB,
-                            cal.zea_B, cal.dir_B, cal.valid,
-                            config.sensor_align_voltage, config.voltage_limit,
-                            pins.enB, 'B');
+             "--- Motor B FOC align (Motor A held at %.1fV DC to resist coupling) ---",
+             config.sensor_align_voltage);
+    _motorA.setPhaseVoltage(config.sensor_align_voltage, 0.0f, 0.0f);
+    bool okB = alignMotor(_motorB, _sensorB,
+                          cal.zea_B, cal.dir_B, cal.valid,
+                          config.sensor_align_voltage, config.voltage_limit, pins.enB, 'B');
+    _motorA.setPhaseVoltage(0.0f, 0.0f, 0.0f);
 
     // ── Save calibration after a successful live alignment ────────────────────
     if (!cal.valid && okA && okB) {
@@ -320,29 +294,18 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
                  _motorB.zero_electric_angle, (int)_motorB.sensor_direction);
     }
 
-    logWrite(LOG_INFO, "Re-enabling both drivers: GPIO%d GPIO%d", pins.enA, pins.enB);
-    _driverA->enable();
-    _driverB->enable();
-    logWrite(LOG_INFO, "Drivers re-enabled: GPIO%d=%s  GPIO%d=%s",
-             pins.enA, digitalRead(pins.enA) ? "HI" : "LO",
-             pins.enB, digitalRead(pins.enB) ? "HI" : "LO");
-
+    // ── Handle calibration failure ────────────────────────────────────────────
     _calibrated = okA && okB;
     if (!_calibrated) {
         _driverA->disable();
         _driverB->disable();
         _enabled = false;
         logWrite(LOG_ERROR,
-                 "FOC init failed (okA=%d okB=%d) — drivers disabled.  "
+                 "FOC init failed (okA=%d okB=%d) — motors disabled.  "
                  "If rawDelta above was tiny: increase sensor_align_voltage (%.1fV).  "
-                 "If rawDelta was ~0: check 24V motor supply and phase wiring.",
+                 "Connect 24V and send CLEAR_CAL via app to re-align.",
                  (int)okA, (int)okB, config.sensor_align_voltage);
         logWrite(LOG_ERROR, "After disable: GPIO%d(A)=%s  GPIO%d(B)=%s",
-                 pins.enA, digitalRead(pins.enA) ? "HI" : "LO",
-                 pins.enB, digitalRead(pins.enB) ? "HI" : "LO");
-    } else {
-        logWrite(LOG_INFO,
-                 "Both motors calibrated OK — GPIO%d(A)=%s  GPIO%d(B)=%s",
                  pins.enA, digitalRead(pins.enA) ? "HI" : "LO",
                  pins.enB, digitalRead(pins.enB) ? "HI" : "LO");
     }
@@ -350,7 +313,7 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
     logWrite(LOG_INFO, "begin() complete — calibrated=%s", _calibrated ? "YES" : "NO");
 }
 
-// ── Runtime ─────────────────────────────────────────────────────────────────────────────
+// ── Runtime ──────────────────────────────────────────────────────────────────
 
 void DifferentialTurret::applyPIDConfig() {
     _motorA.P_angle.P                = _config.angle_P;
@@ -369,11 +332,11 @@ void DifferentialTurret::applyPIDConfig() {
 }
 
 void DifferentialTurret::update() {
-    // When not calibrated the drivers are hardware-disabled (enable pin LO) so
-    // no current flows regardless of what we compute.  Still run sensor reads
-    // so shaft_velocity and shaft_angle are live in the app even before
-    // calibration succeeds — the encoder works independently of FOC.
+    unsigned long now = micros();
+
     if (!_calibrated) {
+        // Stream encoder-based velocity/acceleration even without FOC so the
+        // app bars show live data while diagnosing calibration issues.
         if (_sensorA) {
             _sensorA->update();
             _motorA.shaft_angle    = _sensorA->getAngle();
@@ -385,10 +348,9 @@ void DifferentialTurret::update() {
             _motorB.shaft_velocity = _sensorB->getVelocity();
         }
 
-        unsigned long now = micros();
         if (_lastUpdateUs != 0) {
             float dt = (now - _lastUpdateUs) * 1e-6f;
-            if (dt > 0.0f && dt < 1.0f) {
+            if (dt > 0.0f) {
                 _motorA_acc = (_motorA.shaft_velocity - _prevMotorA_vel) / dt;
                 _motorB_acc = (_motorB.shaft_velocity - _prevMotorB_vel) / dt;
             }
@@ -397,15 +359,13 @@ void DifferentialTurret::update() {
         _prevMotorB_vel = _motorB.shaft_velocity;
         _lastUpdateUs   = now;
 
-        static uint32_t skipCount = 0;
-        if (skipCount % 500 == 0) {
+        _uncalLoopCount++;
+        if (_uncalLoopCount >= 500) {
             logWrite(LOG_WARN,
-                     "FOC disabled (not calibrated, call #%lu) — "
-                     "sensors active, drivers off.  "
-                     "Send CLEAR_CAL and reboot with 24V to calibrate.",
-                     (unsigned long)skipCount);
+                     "FOC disabled (not calibrated) — sensors active, drivers off.  "
+                     "Send CLEAR_CAL and reboot with 24V to calibrate.");
+            _uncalLoopCount = 0;
         }
-        ++skipCount;
         return;
     }
 
@@ -415,7 +375,6 @@ void DifferentialTurret::update() {
     _motorA.move();
     _motorB.move();
 
-    unsigned long now = micros();
     if (_lastUpdateUs != 0) {
         float dt = (now - _lastUpdateUs) * 1e-6f;
         if (dt > 0.0f) {
