@@ -29,8 +29,6 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
 
     _driverA = new BLDCDriver3PWM(pins.pwmA_a, pins.pwmA_b, pins.pwmA_c, pins.enA);
     _driverB = new BLDCDriver3PWM(pins.pwmB_a, pins.pwmB_b, pins.pwmB_c, pins.enB);
-    Serial.printf("[TURRET] Driver A pins: pwm=(%d,%d,%d), en=%d\n", pins.pwmA_a, pins.pwmA_b, pins.pwmA_c, pins.enA);
-    Serial.printf("[TURRET] Driver B pins: pwm=(%d,%d,%d), en=%d\n", pins.pwmB_a, pins.pwmB_b, pins.pwmB_c, pins.enB);
 
     _driverA->voltage_power_supply = config.voltage_power_supply;
     _driverA->voltage_limit = config.voltage_power_supply;
@@ -86,10 +84,12 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
     int motOkA = _motorA.init();
     logWrite(motOkA ? LOG_INFO : LOG_ERROR, "MotorA init %s", motOkA ? "OK" : "FAILED");
 
-    // Enable the driver before initFOC so the motor phases are powered during
-    // the alignment sequence. BLDCDriver3PWM::init() leaves the enable pin LOW
-    // (driver off); if initFOC runs with the driver disabled no current flows,
-    // the rotor can't move, alignSensor() detects zero movement and returns 0.
+    // SimpleFOC 2.4 no longer calls enable() inside init(). The gate driver
+    // enable pin stays LOW until enable() is called explicitly. alignSensor()
+    // inside initFOC() must be able to physically rotate the motor, so the
+    // driver must be enabled first. motor.enabled stays true after this;
+    // DifferentialTurret::disable/enable toggle only the driver hardware enable
+    // pin, not the motor object, so loopFOC() keeps running for sensor tracking.
     _motorA.enable();
 
     // Read the sensor through the motor's own linked sensor path (goes through
@@ -137,7 +137,6 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
 
     _motorB.voltage_limit = config.sensor_align_voltage;
     bool okB = _motorB.initFOC();
-    _motorB.voltage_limit = config.voltage_limit;
     logWrite(okB ? LOG_INFO : LOG_ERROR,
              "MotorB initFOC: %s  zero_elec_angle=%.4f rad  shaft_angle=%.4f rad (%.1f deg)",
              okB ? "OK" : "FAILED",
