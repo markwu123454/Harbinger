@@ -58,6 +58,12 @@ void motorWrite(float heading, float elevation,
     xSemaphoreGive(dataMutex);
 }
 
+void motorSetCalibrated(bool cal) {
+    xSemaphoreTake(dataMutex, portMAX_DELAY);
+    shared.calibrated = cal;
+    xSemaphoreGive(dataMutex);
+}
+
 // ── Wifi ↔ Shared ───────────────────────────────────────────────
 
 WifiSnapshot wifiRead() {
@@ -73,6 +79,7 @@ WifiSnapshot wifiRead() {
     s.turretArm        = shared.turretArm;
     s.gunArm           = shared.gunArm;
     s.targetVoltage    = shared.targetVoltage;
+    s.calibrated       = shared.calibrated;
     s.stateChanged     = shared.stateChanged;
     shared.stateChanged = false;
     xSemaphoreGive(dataMutex);

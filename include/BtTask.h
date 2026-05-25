@@ -14,7 +14,7 @@ private:
     [[noreturn]] void run();
 
     void processMessage(uint8_t type, const uint8_t* payload, size_t len);
-    void sendState(bool masterArm, bool turretArm, bool gunArm, float targetV);
+    void sendState(bool masterArm, bool turretArm, bool gunArm, float targetV, bool calibrated);
     void sendTelemetry(float heading, float elevation,
                        float aVel, float aAcc, float bVel, float bAcc);
     void sendLog(uint8_t level, const char* msg);

@@ -12,6 +12,7 @@ void ControlTask::taskEntry(void* param) {
 
 void ControlTask::run() {
     turret_.begin(DEFAULT_TURRET_PINS, DEFAULT_TURRET_CONFIG);
+    motorSetCalibrated(turret_.isCalibrated());
     turret_.setMode(TurretMode::CLOSED_LOOP_POSITION);
 
     for (;;) {

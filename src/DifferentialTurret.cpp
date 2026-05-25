@@ -1,5 +1,7 @@
 #include "DifferentialTurret.h"
 #include "SharedData.h"
+#include "Calibration.h"
+#include "proto.h"
 #include <Wire.h>
 
 DifferentialTurret::DifferentialTurret()
@@ -7,6 +9,26 @@ DifferentialTurret::DifferentialTurret()
     , _motorB(11, 11.1f)
     , _config() {
     Serial.printf("[TURRET] Constructor called with default motor params (poles=11, resistance=11.1)\n");
+}
+
+void DifferentialTurret::clearCalibration() {
+    CalibrationStore::clear();
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+// Apply a static phase voltage for durationMs, then check if the linked
+// sensor moved.  Returns the absolute angle delta in radians.
+static float motorMoveTest(BLDCMotor& motor, MuxedMagneticSensorI2C* sensor,
+                           float voltage, uint32_t durationMs) {
+    sensor->update();
+    float ang0 = sensor->getAngle();
+    motor.setPhaseVoltage(voltage, 0, _3PI_2);
+    delay(durationMs);
+    sensor->update();
+    float ang1 = sensor->getAngle();
+    motor.setPhaseVoltage(0, 0, 0);
+    return fabsf(ang1 - ang0);
 }
 
 void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& config) {
@@ -26,6 +48,21 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
     _motorB = BLDCMotor(config.pole_pairs, config.phase_resistance);
     Serial.printf("[TURRET] Motors reconstructed with poles=%d, resistance=%.2f\n",
                   config.pole_pairs, config.phase_resistance);
+
+    // ── Try to load NVS calibration ───────────────────────────────────────
+    // A valid entry means a previous live alignment succeeded.  We write the
+    // stored angles to the motor objects directly so that initFOC() detects
+    // zero_electric_angle != NOT_SET and skips the physical alignment sweep,
+    // which requires 24 V motor power and physically rotates the shafts.
+    MotorCalibration cal = CalibrationStore::load();
+    if (cal.valid) {
+        logWrite(LOG_INFO,
+                 "NVS cal loaded: zeaA=%.4f dir=%+d  zeaB=%.4f dir=%+d",
+                 cal.zea_A, (int)cal.dir_A, cal.zea_B, (int)cal.dir_B);
+    } else {
+        logWrite(LOG_WARN,
+                 "No NVS cal — live FOC alignment will run (requires 24V motor power)");
+    }
 
     _driverA = new BLDCDriver3PWM(pins.pwmA_a, pins.pwmA_b, pins.pwmA_c, pins.enA);
     _driverB = new BLDCDriver3PWM(pins.pwmB_a, pins.pwmB_b, pins.pwmB_c, pins.enB);
@@ -84,13 +121,43 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
     int motOkA = _motorA.init();
     logWrite(motOkA ? LOG_INFO : LOG_ERROR, "MotorA init %s", motOkA ? "OK" : "FAILED");
 
-    // SimpleFOC 2.4 no longer calls enable() inside init(). The gate driver
-    // enable pin stays LOW until enable() is called explicitly. alignSensor()
-    // inside initFOC() must be able to physically rotate the motor, so the
-    // driver must be enabled first. motor.enabled stays true after this;
-    // DifferentialTurret::disable/enable toggle only the driver hardware enable
-    // pin, not the motor object, so loopFOC() keeps running for sensor tracking.
+    // SimpleFOC 2.4 BLDCMotor::init() calls enable() at the end, so the
+    // driver is already live here.  The explicit enable() below is redundant
+    // but harmless, and makes the intent clear.
     _motorA.enable();
+
+    // ── Motor-A movement self-test ────────────────────────────────────────
+    // Apply a static phase voltage and verify the sensor detects rotation.
+    // "NOT-MOVED" means the gate driver is not sourcing current — most likely
+    // the enable pin is active-LOW on this hardware while SimpleFOC defaults
+    // to active-HIGH.  We auto-detect and flip the polarity if needed.
+    {
+        _motorA.voltage_limit = config.sensor_align_voltage;
+        float delta = motorMoveTest(_motorA, _sensorA, config.sensor_align_voltage, 800);
+        logWrite(delta > 0.01f ? LOG_INFO : LOG_WARN,
+                 "MotorA self-test: delta=%.4f rad (%.1f deg)  en=GPIO%d=%s  [%s]",
+                 delta, delta * 57.2958f,
+                 pins.enA, digitalRead(pins.enA) ? "HI" : "LO",
+                 delta > 0.01f ? "MOVED" : "NOT-MOVED");
+
+        if (delta <= 0.01f) {
+            // Try active-LOW polarity
+            logWrite(LOG_WARN, "MotorA: flipping enable_active_high to LOW and retrying");
+            _driverA->enable_active_high = LOW;
+            _driverA->enable();
+            float delta2 = motorMoveTest(_motorA, _sensorA, config.sensor_align_voltage, 800);
+            logWrite(delta2 > 0.01f ? LOG_INFO : LOG_ERROR,
+                     "MotorA active-LOW retry: delta=%.4f rad  [%s]",
+                     delta2,
+                     delta2 > 0.01f ? "MOVED — active-LOW gate driver confirmed"
+                                    : "STILL NOT MOVING — check wiring and 24V supply");
+            if (delta2 <= 0.01f) {
+                _driverA->enable_active_high = HIGH;  // restore; nothing helped
+            }
+        }
+        // Restore runtime voltage limit — initFOC will re-raise it to sensor_align_voltage
+        _motorA.voltage_limit = config.voltage_limit;
+    }
 
     // Read the sensor through the motor's own linked sensor path (goes through
     // update() → correct mux channel) to confirm sensor data reaches the motor.
@@ -99,12 +166,21 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
     logWrite(LOG_INFO, "MotorA pre-initFOC sensor angle (via update()): %.4f rad (%.1f deg)",
              sensorAngleA, sensorAngleA * 57.2958f);
 
+    // In SimpleFOC 2.4, initFOC() takes no arguments.  To skip the physical
+    // alignment sweep, pre-set zero_electric_angle and sensor_direction directly
+    // on the motor object before calling initFOC().  When zero_electric_angle
+    // != NOT_SET (-12345), SimpleFOC detects that calibration is already done
+    // and skips alignSensor() entirely.
+    if (cal.valid) {
+        _motorA.zero_electric_angle = cal.zea_A;
+        _motorA.sensor_direction    = (Direction)cal.dir_A;
+    }
     // alignSensor() calls setPhaseVoltage(voltage_sensor_align, ...) but
     // setPhaseVoltage() clamps Uq to voltage_limit, making sensor_align_voltage
     // ineffective when voltage_limit < sensor_align_voltage.  Raise the limit
     // for the duration of initFOC then restore it.
     _motorA.voltage_limit = config.sensor_align_voltage;
-    bool okA = _motorA.initFOC();
+    bool okA = (bool)_motorA.initFOC();
     _motorA.voltage_limit = config.voltage_limit;
     logWrite(okA ? LOG_INFO : LOG_ERROR,
              "MotorA initFOC: %s  zero_elec_angle=%.4f rad  shaft_angle=%.4f rad (%.1f deg)",
@@ -130,18 +206,64 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
 
     _motorB.enable();
 
+    // ── Motor-B movement self-test ────────────────────────────────────────
+    {
+        _motorB.voltage_limit = config.sensor_align_voltage;
+        float delta = motorMoveTest(_motorB, _sensorB, config.sensor_align_voltage, 800);
+        logWrite(delta > 0.01f ? LOG_INFO : LOG_WARN,
+                 "MotorB self-test: delta=%.4f rad (%.1f deg)  en=GPIO%d=%s  [%s]",
+                 delta, delta * 57.2958f,
+                 pins.enB, digitalRead(pins.enB) ? "HI" : "LO",
+                 delta > 0.01f ? "MOVED" : "NOT-MOVED");
+
+        if (delta <= 0.01f) {
+            logWrite(LOG_WARN, "MotorB: flipping enable_active_high to LOW and retrying");
+            _driverB->enable_active_high = LOW;
+            _driverB->enable();
+            float delta2 = motorMoveTest(_motorB, _sensorB, config.sensor_align_voltage, 800);
+            logWrite(delta2 > 0.01f ? LOG_INFO : LOG_ERROR,
+                     "MotorB active-LOW retry: delta=%.4f rad  [%s]",
+                     delta2,
+                     delta2 > 0.01f ? "MOVED — active-LOW gate driver confirmed"
+                                    : "STILL NOT MOVING — check wiring and 24V supply");
+            if (delta2 <= 0.01f) {
+                _driverB->enable_active_high = HIGH;
+            }
+        }
+        _motorB.voltage_limit = config.voltage_limit;
+    }
+
     _sensorB->update();
     float sensorAngleB = _sensorB->getAngle();
     logWrite(LOG_INFO, "MotorB pre-initFOC sensor angle (via update()): %.4f rad (%.1f deg)",
              sensorAngleB, sensorAngleB * 57.2958f);
 
+    if (cal.valid) {
+        _motorB.zero_electric_angle = cal.zea_B;
+        _motorB.sensor_direction    = (Direction)cal.dir_B;
+    }
     _motorB.voltage_limit = config.sensor_align_voltage;
-    bool okB = _motorB.initFOC();
+    bool okB = (bool)_motorB.initFOC();
+    _motorB.voltage_limit = config.voltage_limit;  // restored (was missing before this fix)
     logWrite(okB ? LOG_INFO : LOG_ERROR,
              "MotorB initFOC: %s  zero_elec_angle=%.4f rad  shaft_angle=%.4f rad (%.1f deg)",
              okB ? "OK" : "FAILED",
              _motorB.zero_electric_angle,
              _motorB.shaft_angle, _motorB.shaft_angle * 57.2958f);
+
+    // ── Save calibration after a successful live alignment ────────────────
+    // Only save when we ran live alignment (cal.valid==false) and both motors
+    // succeeded.  If cal was already valid we just used the stored values.
+    if (!cal.valid && okA && okB) {
+        CalibrationStore::save(
+            _motorA.zero_electric_angle, _motorA.sensor_direction,
+            _motorB.zero_electric_angle, _motorB.sensor_direction
+        );
+        logWrite(LOG_INFO,
+                 "Calibration saved to NVS (zeaA=%.4f dir=%+d  zeaB=%.4f dir=%+d)",
+                 _motorA.zero_electric_angle, (int)_motorA.sensor_direction,
+                 _motorB.zero_electric_angle, (int)_motorB.sensor_direction);
+    }
 
     // Restore Motor A's driver. Both motor objects remain enabled so loopFOC()
     // runs for both. The control task calls turret_.disable() immediately on
@@ -149,7 +271,23 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
     // pins low via the driver hardware.
     _driverA->enable();
 
-    Serial.printf("[TURRET] begin() complete\n");
+    // ── Handle calibration failure ────────────────────────────────────────
+    // If initFOC failed for either motor (zero_electric_angle still NOT_SET),
+    // running loopFOC() would produce garbage phase voltages.  Disable both
+    // drivers and block the control loop until the user clears NVS calibration
+    // (MSG_CLEAR_CALIBRATION via BT), powers on with 24 V, and reboots.
+    _calibrated = okA && okB;
+    if (!_calibrated) {
+        _driverA->disable();
+        _driverB->disable();
+        _enabled = false;
+        logWrite(LOG_ERROR,
+                 "FOC init failed — motors disabled. "
+                 "Connect 24V power and send CLEAR_CAL via app to re-align.");
+    }
+
+    Serial.printf("[TURRET] begin() complete — calibrated=%s\n",
+                  _calibrated ? "YES" : "NO");
 }
 
 void DifferentialTurret::applyPIDConfig() {
@@ -172,6 +310,8 @@ void DifferentialTurret::applyPIDConfig() {
 }
 
 void DifferentialTurret::update() {
+    if (!_calibrated) return;  // do not run FOC with invalid zero_electric_angle
+
     _motorA.loopFOC();
     _motorB.loopFOC();
 
@@ -259,6 +399,7 @@ float DifferentialTurret::getElevation() const {
 }
 
 void DifferentialTurret::enable() {
+    if (!_calibrated) return;  // refuse to enable with invalid FOC state
     _driverA->enable();
     _driverB->enable();
     _enabled = true;
