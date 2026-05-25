@@ -99,12 +99,24 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
     logWrite(LOG_INFO, "MotorA pre-initFOC sensor angle (via update()): %.4f rad (%.1f deg)",
              sensorAngleA, sensorAngleA * 57.2958f);
 
+    // alignSensor() calls setPhaseVoltage(voltage_sensor_align, ...) but
+    // setPhaseVoltage() clamps Uq to voltage_limit, making sensor_align_voltage
+    // ineffective when voltage_limit < sensor_align_voltage.  Raise the limit
+    // for the duration of initFOC then restore it.
+    _motorA.voltage_limit = config.sensor_align_voltage;
     bool okA = _motorA.initFOC();
+    _motorA.voltage_limit = config.voltage_limit;
     logWrite(okA ? LOG_INFO : LOG_ERROR,
              "MotorA initFOC: %s  zero_elec_angle=%.4f rad  shaft_angle=%.4f rad (%.1f deg)",
              okA ? "OK" : "FAILED",
              _motorA.zero_electric_angle,
              _motorA.shaft_angle, _motorA.shaft_angle * 57.2958f);
+
+    // Disable Motor A's driver before Motor B alignment. Motor A's alignment
+    // physically moves the differential, and its cogging then resists Motor B
+    // through the coupled mechanism. Disabling just the driver (not the motor
+    // object) keeps motor.enabled=true so loopFOC() works post-init.
+    _driverA->disable();
 
     // ── Motor B ───────────────────────────────────────────────────────────
     _motorB.linkDriver(_driverB);
@@ -123,12 +135,19 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
     logWrite(LOG_INFO, "MotorB pre-initFOC sensor angle (via update()): %.4f rad (%.1f deg)",
              sensorAngleB, sensorAngleB * 57.2958f);
 
+    _motorB.voltage_limit = config.sensor_align_voltage;
     bool okB = _motorB.initFOC();
     logWrite(okB ? LOG_INFO : LOG_ERROR,
              "MotorB initFOC: %s  zero_elec_angle=%.4f rad  shaft_angle=%.4f rad (%.1f deg)",
              okB ? "OK" : "FAILED",
              _motorB.zero_electric_angle,
              _motorB.shaft_angle, _motorB.shaft_angle * 57.2958f);
+
+    // Restore Motor A's driver. Both motor objects remain enabled so loopFOC()
+    // runs for both. The control task calls turret_.disable() immediately on
+    // its first iteration (nothing armed at startup) which drives both enable
+    // pins low via the driver hardware.
+    _driverA->enable();
 
     Serial.printf("[TURRET] begin() complete\n");
 }
@@ -160,6 +179,18 @@ void DifferentialTurret::update() {
 
     _motorA.move();
     _motorB.move();
+
+    unsigned long now = micros();
+    if (_lastUpdateUs != 0) {
+        float dt = (now - _lastUpdateUs) * 1e-6f;
+        if (dt > 0.0f) {
+            _motorA_acc = (_motorA.shaft_velocity - _prevMotorA_vel) / dt;
+            _motorB_acc = (_motorB.shaft_velocity - _prevMotorB_vel) / dt;
+        }
+    }
+    _prevMotorA_vel = _motorA.shaft_velocity;
+    _prevMotorB_vel = _motorB.shaft_velocity;
+    _lastUpdateUs   = now;
 }
 
 void DifferentialTurret::setMode(const TurretMode mode) {

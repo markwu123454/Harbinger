@@ -30,12 +30,12 @@ void ControlTask::run() {
         turret_.update();
 
         motorWrite(
-            turret_.getHeading()   * RAD_TO_DEG,
-            turret_.getElevation() * RAD_TO_DEG,
+            turret_.getHeading()           * RAD_TO_DEG,
+            turret_.getElevation()         * RAD_TO_DEG,
             turret_.motorA().shaft_velocity,
-            turret_.motorA().shaft_velocity_sp - turret_.motorA().shaft_velocity,
+            turret_.getMotorAAcceleration(),
             turret_.motorB().shaft_velocity,
-            turret_.motorB().shaft_velocity_sp - turret_.motorB().shaft_velocity
+            turret_.getMotorBAcceleration()
         );
 
         vTaskDelay(10 / portTICK_PERIOD_MS);
