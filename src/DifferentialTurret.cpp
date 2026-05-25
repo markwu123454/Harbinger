@@ -1,6 +1,7 @@
 #include "DifferentialTurret.h"
 #include "SharedData.h"
 #include "Calibration.h"
+#include "proto.h"
 #include <Wire.h>
 
 DifferentialTurret::DifferentialTurret()
@@ -33,8 +34,9 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
                   config.pole_pairs, config.phase_resistance);
 
     // ── Try to load NVS calibration ───────────────────────────────────────
-    // A valid entry means a previous live alignment succeeded.  We pass the
-    // stored angles directly to initFOC() to skip the physical alignment sweep,
+    // A valid entry means a previous live alignment succeeded.  We write the
+    // stored angles to the motor objects directly so that initFOC() detects
+    // zero_electric_angle != NOT_SET and skips the physical alignment sweep,
     // which requires 24 V motor power and physically rotates the shafts.
     MotorCalibration cal = CalibrationStore::load();
     if (cal.valid) {
@@ -118,14 +120,21 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
     logWrite(LOG_INFO, "MotorA pre-initFOC sensor angle (via update()): %.4f rad (%.1f deg)",
              sensorAngleA, sensorAngleA * 57.2958f);
 
+    // In SimpleFOC 2.4, initFOC() takes no arguments.  To skip the physical
+    // alignment sweep, pre-set zero_electric_angle and sensor_direction directly
+    // on the motor object before calling initFOC().  When zero_electric_angle
+    // != NOT_SET (-12345), SimpleFOC detects that calibration is already done
+    // and skips alignSensor() entirely.
+    if (cal.valid) {
+        _motorA.zero_electric_angle = cal.zea_A;
+        _motorA.sensor_direction    = (Direction)cal.dir_A;
+    }
     // alignSensor() calls setPhaseVoltage(voltage_sensor_align, ...) but
     // setPhaseVoltage() clamps Uq to voltage_limit, making sensor_align_voltage
     // ineffective when voltage_limit < sensor_align_voltage.  Raise the limit
     // for the duration of initFOC then restore it.
     _motorA.voltage_limit = config.sensor_align_voltage;
-    bool okA = cal.valid
-        ? (bool)_motorA.initFOC(cal.zea_A, (Direction)cal.dir_A)
-        : (bool)_motorA.initFOC();
+    bool okA = (bool)_motorA.initFOC();
     _motorA.voltage_limit = config.voltage_limit;
     logWrite(okA ? LOG_INFO : LOG_ERROR,
              "MotorA initFOC: %s  zero_elec_angle=%.4f rad  shaft_angle=%.4f rad (%.1f deg)",
@@ -156,10 +165,12 @@ void DifferentialTurret::begin(const TurretPins& pins, const TurretConfig& confi
     logWrite(LOG_INFO, "MotorB pre-initFOC sensor angle (via update()): %.4f rad (%.1f deg)",
              sensorAngleB, sensorAngleB * 57.2958f);
 
+    if (cal.valid) {
+        _motorB.zero_electric_angle = cal.zea_B;
+        _motorB.sensor_direction    = (Direction)cal.dir_B;
+    }
     _motorB.voltage_limit = config.sensor_align_voltage;
-    bool okB = cal.valid
-        ? (bool)_motorB.initFOC(cal.zea_B, (Direction)cal.dir_B)
-        : (bool)_motorB.initFOC();
+    bool okB = (bool)_motorB.initFOC();
     _motorB.voltage_limit = config.voltage_limit;  // restored (was missing before this fix)
     logWrite(okB ? LOG_INFO : LOG_ERROR,
              "MotorB initFOC: %s  zero_elec_angle=%.4f rad  shaft_angle=%.4f rad (%.1f deg)",
