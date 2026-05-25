@@ -47,7 +47,7 @@ struct TurretConfig {
     float velocity_D;        ///< velocity loop D gain
     float velocity_ramp;     ///< velocity command ramp [rad/s^2]
     float velocity_lpf;      ///< velocity measurement LPF time constant [s]
-    float sensor_align_voltage; ///< voltage used during initFOC() alignment (must be high enough to physically rotate the motor)
+    float sensor_align_voltage; ///< voltage used during initFOC() alignment
 };
 
 class DifferentialTurret {
@@ -60,7 +60,6 @@ public:
     /// Call every loop iteration. Runs FOC and motion control for both motors.
     void update();
 
-    /// Set turret mode
     void setMode(TurretMode mode);
     [[nodiscard]] TurretMode getMode() const;
 
@@ -74,7 +73,6 @@ public:
     [[nodiscard]] float getMotorAAcceleration() const { return _motorA_acc; }
     [[nodiscard]] float getMotorBAcceleration() const { return _motorB_acc; }
 
-    /// Read current output angles (sensor-based in closed-loop, estimated otherwise)
     [[nodiscard]] float getHeading() const;
     [[nodiscard]] float getElevation() const;
 
@@ -99,6 +97,15 @@ public:
     BLDCMotor& motorB();
 
 private:
+    /// Initialise one motor: link driver/sensor, run self-test, call initFOC.
+    /// Returns true on success.  useStored controls whether to skip the physical
+    /// alignment sweep by pre-loading storedZea/storedDir from NVS.
+    bool initOneMotor(BLDCMotor& motor, BLDCDriver3PWM* driver,
+                      MuxedMagneticSensorI2C* sensor,
+                      float storedZea, int8_t storedDir, bool useStored,
+                      float alignVoltage, float voltageLimit,
+                      uint8_t enPin, char label);
+
     void mixAndApply();
     void applyPIDConfig();
 
@@ -118,9 +125,9 @@ private:
     float _heading_target   = 0.0f;
     float _elevation_target = 0.0f;
 
-    float         _motorA_acc        = 0.0f;
-    float         _motorB_acc        = 0.0f;
-    float         _prevMotorA_vel    = 0.0f;
-    float         _prevMotorB_vel    = 0.0f;
-    unsigned long _lastUpdateUs      = 0;
+    float         _motorA_acc     = 0.0f;
+    float         _motorB_acc     = 0.0f;
+    float         _prevMotorA_vel = 0.0f;
+    float         _prevMotorB_vel = 0.0f;
+    unsigned long _lastUpdateUs   = 0;
 };

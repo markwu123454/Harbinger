@@ -5,7 +5,7 @@
 #include "proto.h"
 #include <string.h>
 
-// ── Task plumbing ─────────────────────────────────────────────
+// ── Task plumbing ───────────────────────────────────────────────────────────────
 
 void BtTask::start(int core, int priority) {
     Serial.printf("[BT] Starting task — core=%d, priority=%d\n", core, priority);
@@ -16,7 +16,7 @@ void BtTask::taskEntry(void* param) {
     static_cast<BtTask*>(param)->run();
 }
 
-// ── Main loop ─────────────────────────────────────────────────
+// ── Main loop ───────────────────────────────────────────────────────────────────
 
 void BtTask::run() {
     Serial.printf("[BT] Task running on core %d\n", xPortGetCoreID());
@@ -34,7 +34,7 @@ void BtTask::run() {
     for (;;) {
         bool connected = bt_.hasClient();
 
-        // ── RX ──────────────────────────────────────────────────
+        // ── RX ────────────────────────────────────────────────────────────────────────
         while (bt_.available()) {
             uint8_t b = static_cast<uint8_t>(bt_.read());
 
@@ -74,10 +74,10 @@ void BtTask::run() {
             }
         }
 
-        // ── Shared state snapshot ────────────────────────────────
+        // ── Shared state snapshot ────────────────────────────────────────────────
         WifiSnapshot snap = wifiRead();  // always call to drain stateChanged flag
 
-        // ── Connection lifecycle ─────────────────────────────────
+        // ── Connection lifecycle ─────────────────────────────────────────────────
         if (connected && !wasConnected) {
             Serial.println("[BT] Client connected — sending initial state + telemetry");
             sendState(snap.masterArm, snap.turretArm, snap.gunArm, snap.targetVoltage, snap.calibrated);
@@ -98,17 +98,17 @@ void BtTask::run() {
             continue;
         }
 
-        // ── TX: state change ─────────────────────────────────────
+        // ── TX: state change ────────────────────────────────────────────────────
         if (snap.stateChanged) {
             Serial.printf("[BT] State change — master=%d turret=%d gun=%d v=%.2f cal=%d\n",
                 snap.masterArm, snap.turretArm, snap.gunArm, snap.targetVoltage, (int)snap.calibrated);
             sendState(snap.masterArm, snap.turretArm, snap.gunArm, snap.targetVoltage, snap.calibrated);
         }
 
-        // ── TX: log queue ────────────────────────────────────────
+        // ── TX: log queue ─────────────────────────────────────────────────────────
         flushLogQueue();
 
-        // ── TX: telemetry (10 ms = 100 Hz, matched to control loop) ───────
+        // ── TX: telemetry (10 ms = 100 Hz, matched to control loop) ───────────────────
         unsigned long now = millis();
         if (now - lastTelemetry >= 10) {
             sendTelemetry(snap.currentHeading, snap.currentElevation,
@@ -121,7 +121,7 @@ void BtTask::run() {
     }
 }
 
-// ── Message handlers ──────────────────────────────────────────
+// ── Message handlers ─────────────────────────────────────────────────────────────
 
 void BtTask::processMessage(uint8_t type, const uint8_t* payload, size_t) {
     switch (type) {
@@ -164,7 +164,7 @@ void BtTask::processMessage(uint8_t type, const uint8_t* payload, size_t) {
     }
 }
 
-// ── TX helpers ────────────────────────────────────────────────
+// ── TX helpers ────────────────────────────────────────────────────────────────
 
 void BtTask::sendState(bool masterArm, bool turretArm, bool gunArm, float targetV, bool calibrated) {
     PktState pkt;
