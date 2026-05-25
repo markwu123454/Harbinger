@@ -33,6 +33,6 @@ inline constexpr TurretPins DEFAULT_TURRET_PINS {
     .sda     = 21,
     .scl     = 22,
     .muxAddr = 0x70,  // A0/A1/A2 all tied to GND
-    .chanA   = 0,     // Motor A AS5600 on mux channel 0
-    .chanB   = 1,     // Motor B AS5600 on mux channel 1
+    .chanA   = 1,     // Motor A AS5600 on mux channel 1 (swapped: ch1 has agc≈114, ch0 has agc≈15)
+    .chanB   = 0,     // Motor B AS5600 on mux channel 0
 };
