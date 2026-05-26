@@ -13,9 +13,7 @@ void ControlTask::taskEntry(void* param) {
 void ControlTask::run() {
     turret_.begin(DEFAULT_TURRET_PINS, DEFAULT_TURRET_CONFIG);
     motorSetCalibrated(turret_.isCalibrated());
-    // Open-loop velocity: joystick directly commands motor speed without PID.
-    // Switch to CLOSED_LOOP_POSITION once PID gains are tuned.
-    turret_.setMode(TurretMode::VELOCITY);
+    turret_.setMode(TurretMode::CLOSED_LOOP_POSITION);
 
     for (;;) {
         const MotorSnapshot snap = motorRead();

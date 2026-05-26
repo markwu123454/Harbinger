@@ -13,13 +13,24 @@ inline constexpr TurretConfig DEFAULT_TURRET_CONFIG {
     .phase_resistance     = 11.1f,
     .gear_ratio_heading   = 120.0f / 20.0f,
     .gear_ratio_elevation = 120.0f / 20.0f * 15.0f / 110.0f,
-    // Closed-loop PID gains – tune these for your system
-    .angle_P       = 20.0f,
+    // Closed-loop PID gains.
+    //
+    // Cascade structure: position P → velocity setpoint → velocity PID → voltage
+    //
+    // Tuning order:
+    //   1. angle_P: raise until position response feels responsive but not overshooty
+    //   2. velocity_P: raise until velocity tracking is crisp
+    //   3. velocity_I: add only after P is stable — removes steady-state drag
+    //   4. velocity_lpf: increase if motor hums/rattles (noisy encoder)
+    //
+    // These are conservative starting values estimated from observed oscillation
+    // with the previous gains (angle_P=20, velocity_I=10 caused windup jitter):
+    .angle_P       =  5.0f,   // was 20 — lower outer P reduces velocity command magnitude
     .velocity_P    =  0.5f,
-    .velocity_I    = 10.0f,
+    .velocity_I    =  5.0f,   // was 10 — high I winds up fast at 10ms loop, causing overshoot
     .velocity_D    =  0.0f,
-    .velocity_ramp = 1000.0f,
-    .velocity_lpf  = 0.01f,
+    .velocity_ramp = 500.0f,  // was 1000 — gentler acceleration
+    .velocity_lpf  =  0.05f,  // was 0.01 — longer LPF smooths noisy encoder velocity
     // 12V gives ~1.1A through 11.1 Ohm phases — enough torque to rotate the
     // differential mechanism during initFOC alignment.  6V was insufficient
     // (caused rawDelta < SimpleFOC MIN_ANGLE_DETECT_MOVEMENT).
