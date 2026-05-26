@@ -413,8 +413,29 @@ void DifferentialTurret::setTarget(const float heading, const float elevation) {
 void DifferentialTurret::mixAndApply() {
     const float hdg_motor = _heading_target * _config.gear_ratio_heading;
     const float elv_motor = _elevation_target * _config.gear_ratio_elevation;
+
     _motorA.target = hdg_motor + elv_motor;
     _motorB.target = hdg_motor - elv_motor;
+
+    if (_mode == TurretMode::CLOSED_LOOP_POSITION) {
+        // Proportional velocity synchronization: scale each motor's velocity_limit
+        // to its share of the remaining distance so both arrive simultaneously.
+        // Without this the heading (gear=6) and elevation (gear=0.82) axes finish
+        // at very different times, causing the trajectory to curve.
+        float errA = fabsf(_motorA.target - _motorA.shaft_angle);
+        float errB = fabsf(_motorB.target - _motorB.shaft_angle);
+        float maxErr = fmaxf(errA, errB);
+
+        if (maxErr > 0.05f) {
+            // Floor at 5% so the leading motor can still make small corrections
+            _motorA.velocity_limit = _config.velocity_limit * fmaxf(0.05f, errA / maxErr);
+            _motorB.velocity_limit = _config.velocity_limit * fmaxf(0.05f, errB / maxErr);
+        } else {
+            // Both near target — restore full speed for final settling
+            _motorA.velocity_limit = _config.velocity_limit;
+            _motorB.velocity_limit = _config.velocity_limit;
+        }
+    }
 }
 
 float DifferentialTurret::getHeading() const {
